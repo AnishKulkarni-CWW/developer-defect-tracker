@@ -1,0 +1,15 @@
+# QA Report Studio — runtime dependencies.
+# Everything here is pure-Python or ships prebuilt wheels, so Streamlit
+# Community Cloud installs it without needing a packages.txt.
+streamlit>=1.32
+pandas>=2.0
+openpyxl>=3.1
+python-pptx>=0.6.23
+reportlab>=4.0
+matplotlib>=3.7
+Pillow>=10.0
+
+# Optional: only needed to read old-format .xls files.
+# .xlsx, .xlsm and .csv work without it. Uncomment before deploying if your
+# team still exports .xls from the audit tool.
+# xlrd>=2.0
