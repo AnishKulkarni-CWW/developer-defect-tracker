@@ -1,0 +1,14 @@
+# Runtime data. The app writes its database, settings and backups here; they
+# belong to whoever is running it, not to the repository.
+data/
+
+# Local environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# OS noise
+.DS_Store
+Thumbs.db

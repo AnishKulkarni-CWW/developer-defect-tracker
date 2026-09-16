@@ -1,0 +1,43 @@
+# Native Streamlit theme.
+#
+# This is deliberately not left to CSS. Streamlit paints its own widgets from
+# these values — multiselect chips, checkboxes, radios, sliders, focus rings,
+# dropdown menus and the data grid — and setting them here means they follow
+# the brand through a Streamlit upgrade instead of depending on internal class
+# names that change between releases. The stylesheet in qars/theme.py then
+# dresses only the parts that are ours: the rail, the cards, the hero, the
+# stepper, the KPI tiles.
+#
+# ---------------------------------------------------------------------------
+# DARK MODE
+# ---------------------------------------------------------------------------
+# The app reads `theme.base` at startup and matches its own palette to it, so
+# switching the four values below is all that is needed — chrome, widgets and
+# the data grid all move together. Comment out the light block and uncomment
+# the dark one, then restart the app.
+# ---------------------------------------------------------------------------
+
+[theme]
+primaryColor = "#F4511E"
+
+# --- light (default) -------------------------------------------------------
+base = "light"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F7F8FB"
+textColor = "#171A23"
+
+# --- dark ------------------------------------------------------------------
+# base = "dark"
+# backgroundColor = "#1A1D26"
+# secondaryBackgroundColor = "#232733"
+# textColor = "#F2F4F8"
+
+font = "sans serif"
+
+[server]
+# Audit workbooks are the whole point of the app, and a year of task rows is
+# comfortably bigger than the default limit suggests to the user.
+maxUploadSize = 200
+
+[browser]
+gatherUsageStats = false

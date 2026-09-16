@@ -87,7 +87,12 @@ def quality_trend(rows, w=6.4, h=3.5, target=None):
 
     fig, ax = plt.subplots(figsize=(w, h))
     bw = 0.56 if len(vals) > 2 else (0.34 if len(vals) == 2 else 0.22)
-    bars = ax.bar(range(len(vals)), vals, width=bw, color=T.hx(T.BLUE), zorder=3)
+    # The latest month carries the full brand colour and the earlier ones a
+    # lighter tint of it, so the eye lands on "where we are now" before it
+    # reads the history.
+    cols = [T.hx(T.mix(T.BRAND, T.WHITE, 0.55))] * len(vals)
+    cols[-1] = T.hx(T.BRAND)
+    bars = ax.bar(range(len(vals)), vals, width=bw, color=cols, zorder=3)
     ax.set_xlim(-0.6, len(vals) - 0.4)
 
     lo = max(0, math.floor(min(vals) / 5) * 5 - 5)
@@ -96,10 +101,10 @@ def quality_trend(rows, w=6.4, h=3.5, target=None):
         lo = max(0, min(vals) - 5)
     ax.set_ylim(lo, hi + (hi - lo) * 0.13)
 
-    for b, v in zip(bars, vals):
+    for i, (b, v) in enumerate(zip(bars, vals)):
         ax.text(b.get_x() + b.get_width() / 2, v + (hi - lo) * 0.025, f"{v:.2f}%",
                 ha="center", va="bottom", fontsize=8.6, fontweight="bold",
-                color=T.hx(T.TEXT))
+                color=T.hx(T.BRAND if i == len(vals) - 1 else T.TEXT))
 
     if target:
         ax.axhline(target, color=T.hx(T.GREEN), lw=1.2, ls=(0, (5, 4)), zorder=2)
@@ -147,7 +152,7 @@ def category_donut(rows, w=3.5, h=3.5, centre_total=None):
                 fontsize=7.8, fontweight="bold", color="white")
 
     ax.text(0, 0.10, f"{total}", ha="center", va="center",
-            fontsize=21, fontweight="bold", color=T.hx(T.NAVY))
+            fontsize=21, fontweight="bold", color=T.hx(T.TEXT))
     ax.text(0, -0.16, "Total\nDefects", ha="center", va="center",
             fontsize=8, color=T.hx(T.TEXT_MUTED), linespacing=1.35)
     ax.set(aspect="equal")
@@ -216,7 +221,7 @@ def internal_external(internal, external, w=3.4, h=2.6):
         return _empty(w, h, "No defects")
     fig, ax = plt.subplots(figsize=(w, h))
     vals = [internal, external]
-    cols = [T.hx(T.ORANGE), T.hx(T.BLUE)]
+    cols = [T.hx(T.BRAND), T.hx(T.BLUE)]
     names = ["Internal\n(test link)", "External\n(live link)"]
     bars = ax.barh(names, vals, height=0.38, color=cols, zorder=3)
     ax.set_ylim(-0.75, 1.75)
@@ -307,7 +312,7 @@ def market_compare(series_by_market, w=7.4, h=3.4):
     labels.sort()
     xs = {k: i for i, k in enumerate(labels)}
 
-    palette = [T.BLUE, T.ORANGE, T.GREEN, T.PURPLE, T.TEAL]
+    palette = [T.BRAND, T.BLUE, T.GREEN, T.PURPLE, T.TEAL]
     fig, ax = plt.subplots(figsize=(w, h))
     for i, (market, rows) in enumerate(series_by_market.items()):
         pts = [(xs[(r["year"], r["month"])], r["score"]) for r in rows if r.get("score") is not None]
@@ -484,7 +489,7 @@ def rank_badge(rank, size=0.62):
     key = ("rank", rank, round(size, 3))
     if key in _ICON_CACHE:
         return _ICON_CACHE[key]
-    col = {1: T.GOLD, 2: T.SILVER, 3: T.BRONZE}.get(rank, T.BLUE)
+    col = {1: T.GOLD, 2: T.SILVER, 3: T.BRONZE}.get(rank, T.BRAND)
     fig, ax = _canvas(size)
     c = T.hx(col)
     ax.add_patch(Polygon([[36, 40], [48, 40], [44, 8], [30, 16]],
