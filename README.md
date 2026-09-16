@@ -141,9 +141,9 @@ the whole migration.
 no `.env` file. If you were expecting to configure API keys, database URLs or
 service endpoints — there are none, because the app calls nothing external.
 
-Everything that would normally be an environment variable is either in the
-sidebar of the app (organisation name, prepared-by, score benchmarks) or in
-`.streamlit/config.toml` (theme and server settings).
+Everything that would normally be an environment variable is either on the
+**Settings** page of the app (organisation name, prepared-by, score benchmarks)
+or in `.streamlit/config.toml` (theme, upload limit and server settings).
 
 The only variables that have any effect are Streamlit's own optional ones, which
 you will almost certainly never need:
@@ -168,15 +168,28 @@ STREAMLIT_SERVER_PORT=8502 streamlit run app.py
 
 ## 5. Using the application
 
-The app walks through seven visible steps, shown as a progress strip at the top
-of each market tab.
+The app is a single console with a product rail down the left. The **market**
+(India / C3 / Japan) and the **reporting period** are chosen once in the top
+bar and apply everywhere, so a report is set up on one page and read on
+another instead of every market owning its own copy of the whole workflow.
+
+| Page | What it is for |
+|---|---|
+| **Home** | Headline numbers for the selected market, month-on-month movement, quick actions, trend, category donut, top performers, key insights and recent activity. |
+| **Upload & Configure** | The four-step workflow: read a sheet, review the mapping, validate, set the filters, generate. |
+| **Results & Insights** | The full dashboard, and the PPTX / PDF / CSV downloads. |
+| **Data Manager** | Developer name merging, stored periods, import history, backups and restore. |
+| **Compare** | Two or three markets side by side over the same years. |
+| **Settings** | Brand, prepared-by, score benchmarks, appearance and resetting the data. |
+| **Help** | The calculation rules, in the app itself. |
+
+The search box in the top bar looks across developer names, defect titles,
+categories, severities, environments and stored periods. It is read-only — it
+never changes a filter or a stored figure.
 
 ### Step 1 — Upload data
 
-Pick a market tab (**India**, **C3** or **Japan**). Each market keeps its own
-data and its own reports.
-
-Under **Add data**, you can upload two different things:
+On **Upload & Configure** you can add two different things:
 
 - **Audit sheet** (`.xlsx`, `.xlsm`, `.xls`, `.csv`) — the monthly QA audit log.
   This is the important one: it gives task-level detail, so every filter and
@@ -188,7 +201,7 @@ Under **Add data**, you can upload two different things:
 
 Press **Read file(s)**. Nothing is saved yet.
 
-### Step 2 — Review mapping
+### Step 2 — Review and validate
 
 For each file the app shows which sheet it used, which row it found the header
 on, and which columns it recognised. It also shows **how it worked out the
@@ -199,26 +212,16 @@ If those signals disagree you get a clear warning:
 
 > ⚠ Month conflict detected — Filename: March 2026 · Date data: April 2026
 
-You can then confirm or override the reporting period from the dropdown before
+You can confirm or override the reporting period from the dropdown before
 anything is imported.
 
-### Step 3 — Validate
-
-The app reports anything worth knowing before you commit: rows it had to skip
-and why, rows dated outside the dominant year (usually typos in the sheet), and
-rows with no date at all.
+Underneath, the app reports anything else worth knowing before you commit: rows
+it had to skip and why, rows dated outside the dominant year (usually typos in
+the sheet), and rows with no date at all.
 
 Press **Confirm and import**, or **Cancel** to discard.
 
-### Step 4 — Review metrics
-
-The full executive dashboard appears **in the browser** — the same one that goes
-into the deck. KPI tiles, the monthly trend, the defect-category donut, the top
-performers, the task-composition bar and the key insights.
-
-Expand *Monthly detail, developer table and recommendations* for the full tables.
-
-### Step 5 — Configure the report
+### Step 3 — Configure
 
 Choose years, months and developers. *More filters* holds defect category,
 severity, environment, ISO week, day of month and QA analyst. *Sections to
@@ -230,29 +233,43 @@ form.
 changing a dropdown does not trigger any work. This was a deliberate design
 decision: the app should never grind away while you are still deciding.
 
-### Step 6 — Generate report
+**Apply filters** updates the figures on screen without building anything. The
+*Review the metrics* strip underneath always shows the numbers the report will
+carry, so there is never a gap between what you checked and what you generated.
+
+Choosing a single month in the top-bar period picker narrows the dashboard
+**and** the report built from it, and the page says so in as many words — the
+numbers you read are always the numbers you download.
+
+### Step 4 — Generate and download
 
 Press **Generate report**. A progress bar pinned to the top of the page fills as
 the deck, the PDF and the CSV are built, and settles on **REPORT GENERATED**.
 Streamlit's own spinner is hidden — it sits in the corner, says nothing useful
 and shifts the page while you are reading it.
 
-### Step 7 — Download
+You land on **Results & Insights**, which opens with the finished report and
+three download buttons: PowerPoint, PDF, and the underlying filtered rows as
+CSV. Downloading does not rebuild anything. Below them is the full dashboard —
+KPI tiles, the monthly trend, the defect-category donut, the top performers, the
+task-composition bar, key insights, recommendations, and the monthly and
+developer tables.
 
-Three buttons: PowerPoint, PDF, and the underlying filtered rows as CSV.
-Downloading does not rebuild anything.
+### Appearance
 
-### Other tabs
+The theme is set once, in `.streamlit/config.toml`, and covers everything: the
+app's own chrome, the charts, and Streamlit's tables and dropdowns. Comment out
+the light block, uncomment the dark one and restart.
 
-- **Compare** — puts two or three markets side by side on one chart.
-- **Data manager** — merge developer name variants, delete a period, view the
-  full import history, back up or export the database.
-- **Help** — the calculation rules, in the app itself.
+There is deliberately no in-app light/dark toggle. Streamlit paints its data
+grid and dropdown menus from that file at startup and no amount of CSS moves
+them at runtime, so a button here would have recoloured half the page and left
+the other half behind.
 
 ### Clearing everything
 
-The sidebar has **🗑 Clear all data**. It asks for confirmation, writes a backup
-first, then empties all three markets so you can start fresh.
+**Settings → Reset** has **🗑 Clear all data**. It asks for confirmation, writes
+a backup first, then empties all three markets so you can start fresh.
 
 **Your import history is deliberately kept.** It is the audit trail of what was
 loaded and when, and wiping it would destroy the record of work you actually
@@ -263,10 +280,10 @@ did. The reset itself is logged in that history too.
 ## 6. Generating reports
 
 1. Import at least one audit sheet for the market.
-2. Go to the **Data manager** tab and merge any flagged name variants. *Do this
+2. Go to the **Data Manager** page and merge any flagged name variants. *Do this
    before reporting* — one person counted under three spellings splits their
    score three ways and distorts the whole report.
-3. Back on the market tab, choose your years and months.
+3. Back on **Upload & Configure**, choose your years and months.
 4. Optionally narrow by developer, category, severity, environment, week or day.
 5. Tick the sections you want:
 
@@ -365,7 +382,7 @@ match**, across every market. `Amol Dohale` → `Amol Laxman Dohale`, `Kapil K` 
 A merge is only ever left to you when it is genuinely ambiguous. If both
 `Amol Laxman Dohale` and `Amol Gaikwad` are on the team, a bare `Amol` could be
 either, and guessing would move one person's tasks onto another. Those cases
-appear on the **Data manager** tab with a dropdown to resolve them.
+appear on the **Data Manager** page with a dropdown to resolve them.
 
 Names that merely share a first name (`Neha Lal` / `Neha Gupta`,
 `Mitesh Gupta` / `Mitesh Salunkhe`) are never merged.
@@ -385,19 +402,33 @@ Task-level Excel data is always the primary source when it is available.
 
 ## 8. Running the tests
 
+There are two suites. Neither needs a test framework, neither touches the
+network, and neither modifies your saved data — every check builds its own
+in-memory database.
+
 ```
-python tests.py
+python tests.py        # the calculation engine
+python tests_ui.py     # the interface
 ```
 
-107 checks covering the calculation engine, ingestion, filtering, legacy deck
+**`tests.py`** covers the calculation engine, ingestion, filtering, legacy deck
 conversion, name merging, error handling, hosted storage and output
-consistency. It needs no test framework,
-touches no network, and never modifies your saved data.
+consistency. 83 checks run on their own; more when the optional sample
+workbooks referenced at the top of the file are present.
 
-Expected output ends with:
+**`tests_ui.py`** boots the real `app.py` through Streamlit's own AppTest
+harness and clicks the real widgets: every page renders, every nav item
+switches, the market and period pickers work, a file is staged, reviewed,
+validated and imported, every filter and section switch is present, a report
+generates, and the deck it produces carries the same figures the screen showed.
+It also exercises the destructive paths — delete a period, clear a market,
+clear everything — and checks each empty state explains itself. 160 checks.
+
+Both end with their own count:
 
 ```
-  107 passed, 0 failed
+  83 passed, 0 failed
+  160 passed, 0 failed
 ```
 
 ---
@@ -431,7 +462,7 @@ import the Excel audit sheet instead — it produces a better report anyway.
 
 **A developer appears twice with split scores**
 Unambiguous variants merge on import. If two rows remain, the name was
-ambiguous — resolve it on the **Data manager** tab.
+ambiguous — resolve it on the **Data Manager** page.
 
 **An imported deck's numbers do not match the deck itself**
 Fixed in this version. Consolidated slides at the end of a deck (titles naming a
@@ -447,7 +478,7 @@ legitimately changes the denominator.
 
 **The quality score differs from an older deck**
 Almost always the observation rule. Older decks counted observations inside the
-No Error figure; this app treats the three counts as separate. The *Help* tab
+No Error figure; this app treats the three counts as separate. The *Help* page
 explains it, and imported decks are converted so their published totals hold.
 
 **"Port 8501 is already in use"**
@@ -483,7 +514,7 @@ environment and switches to **session storage**: nothing is written to disk, and
 each browser session gets its own private copy. A banner at the top of the app
 says so.
 
-**Work is kept with the two buttons on the Data manager tab:**
+**Work is kept with the two buttons on the Data Manager page:**
 
 | Button | What it does |
 |---|---|
@@ -597,8 +628,9 @@ can write to.
 
 ```
 QA_Report_Studio/
-├── app.py                  Streamlit UI — workflow, dashboard, generation
-├── tests.py                107 automated checks (python tests.py)
+├── app.py                  Streamlit UI — rail, pages, workflow, generation
+├── tests.py                Engine checks      (python tests.py)
+├── tests_ui.py             Interface checks   (python tests_ui.py)
 ├── requirements.txt
 ├── .gitignore              keeps client data out of version control
 ├── run_windows.bat         Windows launcher
@@ -606,7 +638,7 @@ QA_Report_Studio/
 ├── .streamlit/config.toml  Theme and server settings
 ├── data/                   Your JSON database (created on first run)
 └── qars/
-    ├── theme.py            Palette sampled from the dashboard reference
+    ├── theme.py            Design system — palette, tokens and the app stylesheet
     ├── store.py            Atomic JSON persistence
     ├── normalize.py        Name, status, category and severity cleaning
     ├── ingest.py           Excel / CSV / PPTX readers, month detection
