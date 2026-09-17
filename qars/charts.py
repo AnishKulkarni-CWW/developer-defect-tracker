@@ -42,21 +42,74 @@ plt.rcParams.update({
 })
 
 
-def _out(fig, transparent=False):
+def _out(fig, transparent=False, tight=True):
     """
     Save at exactly `figsize`, so a chart asked for at 4.5x3.9in always comes
     back at that aspect. bbox_inches="tight" would crop to the ink instead,
     which makes the placed height on a slide impossible to predict.
+
+    `tight=False` is for figures whose axes were positioned by hand to reserve
+    margin for labels drawn outside them; re-fitting those would reclaim the
+    margin and clip the labels.
     """
-    try:
-        fig.tight_layout(pad=0.3)
-    except Exception:                                        # noqa: BLE001
-        pass
+    if tight:
+        try:
+            fig.tight_layout(pad=0.3)
+        except Exception:                                    # noqa: BLE001
+            pass
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=DPI, transparent=transparent)
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
+
+
+def _lead_out(ax, items, radius, fontsize):
+    """
+    Annotate slices too narrow to hold their own figure.
+
+    Labels are stacked in two columns either side of the ring rather than left
+    where the slice happens to point, because two thin slices next to each
+    other put their text in the same place. Within a column they are laid out
+    top-down in the order the slices come round the ring, so the leader lines
+    cannot cross, and the whole column is slid back inside the axes if it runs
+    past the top — a label drawn off the canvas is the same as no label.
+
+    Drawn with annotation_clip off so they sit in the figure margin and the
+    ring itself stays full size.
+
+    items: [(angle_rad, text, colour)]
+    """
+    if not items:
+        return
+    gap, col_x, limit = 0.235, 1.20, 0.96
+    for side in (1, -1):
+        group = [i for i in items if (math.cos(i[0]) >= 0) == (side > 0)]
+        if not group:
+            continue
+        group.sort(key=lambda i: -math.sin(i[0]))            # top of the ring first
+        ys, prev = [], None
+        for ang, _txt, _c in group:
+            y = math.sin(ang) * col_x
+            if prev is not None and y > prev - gap:
+                y = prev - gap
+            ys.append(y)
+            prev = y
+        over = ys[0] - limit
+        if over > 0:
+            ys = [y - over for y in ys]
+        under = -limit - ys[-1]
+        if under > 0:
+            ys = [min(limit, y + under) for y in ys]
+        for (ang, txt, colour), y in zip(group, ys):
+            ax.annotate(txt,
+                        xy=(math.cos(ang) * radius, math.sin(ang) * radius),
+                        xytext=(side * col_x, y),
+                        ha="left" if side > 0 else "right", va="center",
+                        fontsize=fontsize, fontweight="bold", color=T.hx(colour),
+                        annotation_clip=False,
+                        arrowprops={"arrowstyle": "-", "lw": 0.9, "shrinkA": 0,
+                                    "shrinkB": 1, "color": T.hx(colour)})
 
 
 def _empty(w, h, msg="No data for this selection"):
@@ -70,7 +123,7 @@ def _empty(w, h, msg="No data for this selection"):
 # ==========================================================================
 # 1. Monthly quality score column chart
 # ==========================================================================
-def quality_trend(rows, w=6.4, h=3.5, target=None):
+def quality_trend(rows, w=6.4, h=3.5):
     """Column chart of quality score per month, values printed above each bar."""
     rows = [r for r in rows if r.get("score") is not None]
     if not rows:
@@ -106,11 +159,6 @@ def quality_trend(rows, w=6.4, h=3.5, target=None):
                 ha="center", va="bottom", fontsize=8.6, fontweight="bold",
                 color=T.hx(T.BRAND if i == len(vals) - 1 else T.TEXT))
 
-    if target:
-        ax.axhline(target, color=T.hx(T.GREEN), lw=1.2, ls=(0, (5, 4)), zorder=2)
-        ax.text(-0.55, target, f"target {target:.0f}%", va="bottom", ha="left",
-                fontsize=7.2, color=T.hx(T.GREEN), fontweight="bold")
-
     ax.set_xticks(range(len(labels)))
     ax.set_xticklabels(labels, fontsize=9, fontweight="bold")
     ax.set_ylabel("Quality Score (%)", fontsize=8.6)
@@ -137,27 +185,38 @@ def category_donut(rows, w=3.5, h=3.5, centre_total=None):
     cols = [T.hx(T.CATEGORY_COLORS.get(r["category"], T.TEXT_MUTED)) for r in rows]
     total = centre_total if centre_total is not None else sum(vals)
 
-    fig, ax = plt.subplots(figsize=(w, h))
-    wedges, _ = ax.pie(vals, colors=cols, startangle=90, counterclock=False,
+    fig = plt.figure(figsize=(w, h))
+    # A hand-placed axes, inset from the figure, leaves a margin for the
+    # callouts and stops the ring — and the percentage sitting on it — running
+    # into the edge of the image.
+    ax = fig.add_axes([0.13, 0.05, 0.74, 0.90])
+    wedges, _ = ax.pie(vals, colors=cols, startangle=90, counterclock=False, radius=1.0,
                        wedgeprops={"width": 0.36, "edgecolor": "white", "linewidth": 2})
 
+    callouts = []
     for wg, r in zip(wedges, rows):
-        # Only label a slice wide enough to hold the text. Anything smaller is
-        # read off the table beside the chart instead of crowding the ring.
-        if r["pct"] < 9:
-            continue
         ang = math.radians((wg.theta1 + wg.theta2) / 2)
-        x, y = 0.82 * math.cos(ang), 0.82 * math.sin(ang)
-        ax.text(x, y, f"{r['pct']:.0f}%", ha="center", va="center",
-                fontsize=7.8, fontweight="bold", color="white")
+        colour = T.CATEGORY_COLORS.get(r["category"], T.TEXT_MUTED)
+        if r["pct"] >= 9:
+            # Wide enough to carry the figure on the ring itself.
+            ax.text(math.cos(ang) * 0.82, math.sin(ang) * 0.82, f"{r['pct']:.0f}%",
+                    ha="center", va="center", fontsize=8.6, fontweight="bold",
+                    color="white")
+        else:
+            # Too narrow for text on the ring, so it is led out rather than
+            # dropped — a slice with no number is a slice nobody can read.
+            callouts.append((ang, f"{r['pct']:.0f}%", colour))
+    _lead_out(ax, callouts, 1.0, 8.2)
 
-    ax.text(0, 0.10, f"{total}", ha="center", va="center",
-            fontsize=21, fontweight="bold", color=T.hx(T.TEXT))
-    ax.text(0, -0.16, "Total\nDefects", ha="center", va="center",
-            fontsize=8, color=T.hx(T.TEXT_MUTED), linespacing=1.35)
+    ax.text(0, 0.09, f"{total}", ha="center", va="center",
+            fontsize=20, fontweight="bold", color=T.hx(T.TEXT))
+    ax.text(0, -0.17, "Total\nDefects", ha="center", va="center",
+            fontsize=7.6, color=T.hx(T.TEXT_MUTED), linespacing=1.35)
+    ax.set_xlim(-1.02, 1.02)
+    ax.set_ylim(-1.02, 1.02)
     ax.set(aspect="equal")
     ax.axis("off")
-    return _out(fig)
+    return _out(fig, tight=False)
 
 
 # ==========================================================================
@@ -222,7 +281,7 @@ def internal_external(internal, external, w=3.4, h=2.6):
     fig, ax = plt.subplots(figsize=(w, h))
     vals = [internal, external]
     cols = [T.hx(T.BRAND), T.hx(T.BLUE)]
-    names = ["Internal\n(test link)", "External\n(live link)"]
+    names = ["Test\nlink", "Live\nlink"]
     bars = ax.barh(names, vals, height=0.38, color=cols, zorder=3)
     ax.set_ylim(-0.75, 1.75)
     tot = internal + external
@@ -539,34 +598,62 @@ def aging_bar(rows, w=6.0, h=2.6):
 # ==========================================================================
 # 10. Error-free composition — shows observations as a subset, never an extra
 # ==========================================================================
-def composition_bar(total, error, no_error, observation, w=6.0, h=1.5):
+def composition_pie(total, error, no_error, observation, w=3.4, h=3.0):
     """
-    A single stacked bar making the rule visible: the error-free segment is
-    itself split into clean tasks and tasks carrying an observation, so nobody
-    reads Observation as a fourth bucket added on top.
+    How the audited tasks divide: clean, observed, defective.
+
+    Drawn as a ring rather than a stacked bar because a bar sized by value gave
+    a one-task segment a sliver too thin to write in, so its count silently
+    disappeared. Here every slice carries its own number — on the ring when it
+    fits, led out on a line when it does not — and the legend repeats the
+    figures, so no count depends on a slice being wide enough to hold text.
+
+    Observation is a *kind* of error-free task, not a fourth bucket: the two
+    error-free slices sit next to each other and their counts add up to the
+    error-free total, never on top of it.
     """
     if total <= 0:
         return _empty(w, h, "No tasks")
-    fig, ax = plt.subplots(figsize=(w, h))
+
     segs = [("No Error", no_error, T.GREEN),
             ("Observation", observation, T.TEAL),
             ("Error", error, T.RED)]
-    left = 0
-    for label, val, col in segs:
-        if val <= 0:
-            continue
-        ax.barh([0], [val], left=left, height=0.5, color=T.hx(col), zorder=3,
-                label=f"{label} ({val})")
-        if val / total > 0.06:
-            ax.text(left + val / 2, 0, str(val), ha="center", va="center",
-                    fontsize=9, fontweight="bold", color="white", zorder=4)
-        left += val
-    ax.set_xlim(0, total)
-    ax.set_ylim(-0.6, 0.9)
-    ax.set_yticks([])
-    ax.set_xticks([])
-    ax.legend(fontsize=7.6, frameon=False, ncol=3, loc="upper center",
-              bbox_to_anchor=(0.5, 1.25))
-    for s in ("top", "right", "left", "bottom"):
-        ax.spines[s].set_visible(False)
-    return _out(fig)
+    live = [(lbl, val, col) for lbl, val, col in segs if val > 0]
+    if not live:
+        return _empty(w, h, "No tasks")
+
+    # The ring keeps its own axes and the legend gets its own strip of the
+    # figure, so adding a third slice never shrinks the chart to make room.
+    fig = plt.figure(figsize=(w, h))
+    legend_h = 0.055 * len(live) + 0.045
+    ax = fig.add_axes([0.13, legend_h + 0.03, 0.74, 0.94 - legend_h])
+    wedges, _ = ax.pie([v for _, v, _ in live], colors=[T.hx(c) for _, _, c in live],
+                       startangle=90, counterclock=False, radius=1.0,
+                       wedgeprops={"width": 0.36, "edgecolor": "white", "linewidth": 2})
+
+    callouts = []
+    for wg, (lbl, val, col) in zip(wedges, live):
+        ang = math.radians((wg.theta1 + wg.theta2) / 2)
+        if val / total >= 0.09:
+            ax.text(math.cos(ang) * 0.82, math.sin(ang) * 0.82, f"{val:,}",
+                    ha="center", va="center", fontsize=9.6, fontweight="bold",
+                    color="white")
+        else:
+            callouts.append((ang, f"{val:,}", col))
+    _lead_out(ax, callouts, 1.0, 9.0)
+
+    ax.text(0, 0.09, f"{total:,}", ha="center", va="center",
+            fontsize=19, fontweight="bold", color=T.hx(T.TEXT))
+    ax.text(0, -0.17, "Total\nTasks", ha="center", va="center",
+            fontsize=7.6, color=T.hx(T.TEXT_MUTED), linespacing=1.35)
+    ax.set_xlim(-1.02, 1.02)
+    ax.set_ylim(-1.02, 1.02)
+    ax.set(aspect="equal")
+    ax.axis("off")
+
+    handles = [Rectangle((0, 0), 1, 1, color=T.hx(col)) for _, _, col in live]
+    labels = [f"{lbl}   {val:,}  ({val / total * 100:.1f}%)" for lbl, val, _ in live]
+    fig.legend(handles, labels, fontsize=8.0, frameon=False, ncol=1,
+               loc="lower center", bbox_to_anchor=(0.5, 0.0),
+               handlelength=1.0, handleheight=0.9, borderpad=0, labelspacing=0.42)
+    return _out(fig, tight=False)

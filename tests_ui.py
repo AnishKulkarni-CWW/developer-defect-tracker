@@ -32,7 +32,7 @@ from qars import store                                       # noqa: E402
 
 store.SESSION_MODE = True
 
-from qars import ingest, metrics, normalize as nz            # noqa: E402
+from qars import baseline, ingest, metrics, normalize as nz  # noqa: E402
 from streamlit.testing.v1 import AppTest                     # noqa: E402
 
 PASS, FAIL = [], []
@@ -335,7 +335,7 @@ check("PDF download offered", has(at, "download_button", "dl_pdf_India"))
 check("CSV download offered", has(at, "download_button", "dl_csv_India"))
 page = body(at)
 for label in ["Total tasks audited", "Error free tasks", "Observations", "Total defects",
-              "Internal defects", "External defects", "Developers audited",
+              "Test link defects", "Live link defects", "Developers audited",
               "Overall quality score", "Quality score trend", "Defect categories",
               "Top performers", "Task composition", "Key insights", "Recommendations"]:
     check(f"Dashboard block present: {label}", label in page)
@@ -364,14 +364,19 @@ check("Every seeded market appears", all(m in page for m in ("India", "C3", "Jap
 check("Comparison insights are generated", "Comparison insights" in page)
 check("The differing-volume caveat is kept", "fewer tasks" in page)
 
-one = AppTest.from_file(APP, default_timeout=300)
-one.session_state["db"] = store._empty_db()
-one.session_state["db"]["tasks"]["India"] = rows(2026, 5, error=1, no_error=9)
-one.session_state["settings"] = store._default_settings()
-one.session_state["nav"] = "compare"
-one.run()
-check("One market alone explains why there is nothing to compare",
-      "At least two markets are needed" in body(one))
+_decks = baseline.DECKS.copy()
+try:
+    baseline.DECKS.clear()                 # simulate an install without them
+    one = AppTest.from_file(APP, default_timeout=300)
+    one.session_state["db"] = store._empty_db()
+    one.session_state["db"]["tasks"]["India"] = rows(2026, 5, error=1, no_error=9)
+    one.session_state["settings"] = store._default_settings()
+    one.session_state["nav"] = "compare"
+    one.run()
+    check("One market alone explains why there is nothing to compare",
+          "At least two markets are needed" in body(one))
+finally:
+    baseline.DECKS.update(_decks)
 
 section("DATA MANAGER — name merging, periods, history, maintenance")
 at = fresh(nav="data")
@@ -435,20 +440,16 @@ at = fresh(nav="settings")
 ran_clean(at, "Settings renders")
 by_label(at, "text_input", "Brand name").set_value("Contoso").run()
 by_label(at, "text_input", "Prepared by").set_value("Anish K").run()
-by_label(at, "number_input", "Target score").set_value(97.0).run()
-by_label(at, "number_input", "Watch benchmark").set_value(92.0).run()
 by_label(at, "button", "Save changes").click().run()
 s = at.session_state["settings"]
 check("Brand name is saved", s["org_name"] == "Contoso", s["org_name"])
 check("Prepared by is saved", s["prepared_by"] == "Anish K", s["prepared_by"])
-check("Target score is saved", s["target_score"] == 97.0, str(s["target_score"]))
-check("Watch benchmark is saved", s["watch_score"] == 92.0, str(s["watch_score"]))
 check("Saved details reach the sidebar identity", "Contoso" in body(at))
-
-by_label(at, "number_input", "Watch benchmark").set_value(99.0).run()
-by_label(at, "button", "Save changes").click().run()
-check("A watch benchmark above the target is challenged",
-      "watch benchmark sits above the target" in body(at))
+check("No target score can be set", not at.number_input,
+      str([w.label for w in at.number_input]))
+check("The score bands are explained instead", "no target to set" in body(at))
+check("Nothing is stored for a target", "target_score" not in s and "watch_score" not in s,
+      str(sorted(s)))
 
 at = fresh(nav="settings")
 check("Settings reports the theme in force", "Current theme" in body(at))
@@ -495,6 +496,111 @@ else:
     check("Dark palette renders every page", True)
 
 
+section("NO POWERPOINT UPLOAD — the decks are built in")
+at = fresh(nav="upload")
+check("The audit-sheet uploader is still offered", has(at, "button", "bxl_India"))
+check("No PowerPoint uploader remains", not has(at, "button", "bpp_India"))
+page = body(at)
+check("Nothing invites a deck upload",
+      "Import PowerPoint" not in page and "Upload PPTX" not in page)
+check("Only one file uploader is on the page", len(at.file_uploader) == 1,
+      str(len(at.file_uploader)))
+widget(at, "selectbox", "topbar_market").select("C3").run()
+check("A market with a built-in report says so", "already here" in body(at))
+check("It names where the figures came from", "issued for them" in body(at))
+
+section("BUILT-IN REPORTS — present from the first run")
+at = fresh(seed=False)
+db = at.session_state["db"]
+check("C3 arrives with six months", len(db["monthly"]["C3"]) == 6,
+      str(len(db["monthly"]["C3"])))
+check("Japan arrives with six months", len(db["monthly"]["Japan"]) == 6)
+check("India arrives empty", not db["monthly"]["India"] and not db["tasks"]["India"])
+at.session_state["nav"] = "home"
+at.run()
+widget(at, "selectbox", "topbar_market").select("C3").run()
+ran_clean(at, "A built-in market renders its dashboard with no upload at all")
+check("The published C3 score is on screen", "93.29%" in body(at),
+      "score not rendered")
+_c3 = metrics.totals(metrics.select(at.session_state["db"], "C3",
+                                    at.session_state["settings"], {}))
+check("The built-in roster is folded to the count its own deck published",
+      _c3["developers"] == 15, f"{_c3['developers']} developers")
+check("The built-in figures are the published ones",
+      (_c3["total_tasks"], _c3["error_tasks"], _c3["score"]) == (641, 43, 93.29),
+      f"{_c3['total_tasks']} / {_c3['error_tasks']} / {_c3['score']}")
+at.session_state["nav"] = "data"
+at.run()
+check("Built-in months are labelled in the data manager",
+      "Built-in report" in tables(at))
+check("The built-in roster is listed on the merging tab",
+      "Anish" in tables(at), tables(at)[:60].replace("\n", " "))
+check("C3's built-in names are already folded together",
+      at.session_state["settings"]["dev_aliases"] != {},
+      str(list(at.session_state["settings"]["dev_aliases"])[:3]))
+check("A built-in month is not offered for deletion",
+      "Built-in report" not in str([o for sb in at.selectbox if sb.key == "dm_del_pick"
+                                    for o in sb.options])
+      if has(at, "selectbox", "dm_del_pick") else True)
+check("The reason it cannot be deleted is given",
+      "ships with the app" in body(at) or "bring it back on the next run" in body(at))
+
+# Clearing user data must not take the built-in history with it.
+at.session_state["nav"] = "settings"
+at.run()
+widget(at, "button", "set_clear").click().run()
+widget(at, "button", "set_clear_yes").click().run()
+check("Clearing everything leaves the built-in months in place",
+      len(at.session_state["db"]["monthly"]["C3"]) == 6,
+      str(len(at.session_state["db"]["monthly"]["C3"])))
+check("The clear message says the built-in months stay",
+      "part of the app" in body(at))
+
+section("NO HOSTED-STORAGE BANNER")
+at = fresh()
+check("The hosted-server notice is gone from every page",
+      "Running on a hosted server" not in body(at))
+for key in PAGES:
+    at.session_state["nav"] = key
+    at.run()
+    if "Running on a hosted server" in body(at):
+        check("The hosted-server notice is gone from every page", False, key)
+        break
+
+section("LINK TYPES — no external framing on screen")
+at = fresh(nav="upload")
+ep = at.session_state["cfg_epoch"]
+check("The environment filter is called link type",
+      has(at, "multiselect", f"e_India_{ep}")
+      and widget(at, "multiselect", f"e_India_{ep}").label == "Link type",
+      widget(at, "multiselect", f"e_India_{ep}").label)
+at.session_state["nav"] = "results"
+at.run()
+page = body(at)
+check("Nothing on the dashboard calls a defect external",
+      "External defects" not in page and "escaped" not in page)
+check("Both link types are reported", "Test link defects" in page
+      and "Live link defects" in page)
+
+section("SINGLE MONTH — the app says what the report will contain")
+at = fresh(nav="upload")
+ep = at.session_state["cfg_epoch"]
+widget(at, "multiselect", f"m_India_{ep}").set_value([7]).run()
+by_label(at, "button", "Apply filters").click().run()
+check("Selecting one month explains the consolidated section is dropped",
+      "One month selected" in body(at))
+widget(at, "multiselect", f"m_India_{ep}").set_value([5, 6, 7]).run()
+by_label(at, "button", "Apply filters").click().run()
+check("Selecting several months says nothing of the sort",
+      "One month selected" not in body(at))
+
+section("DEVELOPER TABLE — the columns add up on screen")
+at = fresh(nav="results")
+grid = tables(at)
+check("The on-screen developer table carries a Total row", "Total" in grid)
+check("The rule is printed under it", "Error Free = No Error + Observation" in body(at))
+
+
 section("HELP — the reference material is intact")
 at = fresh(nav="help")
 ran_clean(at, "Help renders")
@@ -508,22 +614,28 @@ check("Help documents the new page layout", "Finding your way around" in page)
 section("EMPTY STATES — no data anywhere")
 at = fresh(seed=False)
 for key, expect in [("home", "No data stored"), ("results", "No analysis to show"),
-                    ("upload", "Read an audit sheet above"),
-                    ("compare", "At least two markets are needed"),
-                    ("data", "No task-level data loaded yet")]:
+                    ("upload", "Read an audit sheet above")]:
     at.session_state["nav"] = key
     at.run()
     ok = not at.exception and expect in body(at)
     check(f"Empty state explains itself: {key}", ok,
           "" if ok else (str(at.exception[0].value)[:120] if at.exception else "text missing"))
+at.session_state["nav"] = "compare"
+at.run()
+check("Compare is never empty, because two markets ship with the app",
+      not at.exception and "At least two markets are needed" not in body(at))
+at.session_state["nav"] = "data"
+at.run()
+check("Data Manager shows the built-in roster with nothing uploaded",
+      not at.exception and "Current grouping" in body(at))
 
 section("REGRESSION — the four-step workflow is still visible end to end")
 at = fresh(nav="upload")
 check("The stepper is drawn", "qrs-steps" in body(at))
 check("All four step names are present",
       all(n in body(at) for n in ("Upload data", "Configure", "Generate")))
-check("Both upload surfaces are offered (Excel/CSV and PPTX)",
-      has(at, "button", "bxl_India") and has(at, "button", "bpp_India"))
+check("The audit sheet is the only file the workflow asks for",
+      has(at, "button", "bxl_India") and not has(at, "button", "bpp_India"))
 
 # ==========================================================================
 print("\n" + "=" * 62)

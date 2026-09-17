@@ -21,13 +21,14 @@ plus ingestion, filtering and legacy-deck conversion.
 
 from __future__ import annotations
 
+import inspect
 import io
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from qars import deck, ingest, metrics, normalize as nz, pdf, store  # noqa: E402
+from qars import baseline, deck, ingest, metrics, normalize as nz, pdf, store  # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -431,9 +432,204 @@ try:
     check("Session mode writes nothing to disk", store._write_json("/tmp/qars_never", {}) is False)
     check("Session mode takes no backups", store.backup_db("t") is None)
     check("Session mode still loads usable default settings",
-          float(store.load_settings()["target_score"]) > 0)
+          isinstance(store.load_settings().get("dev_aliases"), dict))
 finally:
     store.SESSION_MODE = _saved
+
+section("NO TARGETS — the benchmark settings are gone")
+_s = store._default_settings()
+check("Settings carry no target score", "target_score" not in _s, str(sorted(_s)))
+check("Settings carry no watch benchmark", "watch_score" not in _s)
+check("Settings no longer name a brand", _s["org_name"] == "", repr(_s["org_name"]))
+check("The score bands live in the engine, not in a setting",
+      (metrics.BAND_GOOD, metrics.BAND_WATCH) == (95.0, 90.0),
+      f"{metrics.BAND_GOOD}/{metrics.BAND_WATCH}")
+_selb = metrics.select(_db_with("India", tasks=_rows(2026, 9, error=3, no_error=17)),
+                       "India", _settings(), {})
+check("Insights read without a target",
+      all("target" not in i["text"].lower() for i in metrics.insights(_selb)),
+      str([i["text"] for i in metrics.insights(_selb)])[:90])
+check("Recommendations read without a target",
+      all("target" not in r["text"].lower() for r in metrics.recommendations(_selb)))
+check("A report still builds with no organisation set",
+      len(deck.build_deck(_selb, {"market_label": "India", "org": ""})) > 40_000)
+check("An unbranded cover does not print a stray separator",
+      deck._brand("", "India") == "India" and deck._brand("Acme", "India") == "Acme India",
+      deck._brand("", "India"))
+check("The PDF brands the same way",
+      pdf._brand("", "Japan") == "Japan" and pdf._brand("Acme", "Japan") == "Acme Japan")
+
+section("LINK TYPES — wording only, figures untouched")
+check("Live still classifies as it always did", nz.norm_env("Live") == nz.ENV_EXTERNAL)
+check("Test still classifies as it always did", nz.norm_env("Test") == nz.ENV_INTERNAL)
+check("Internal is presented as the test link", nz.env_label(nz.ENV_INTERNAL) == "Test link")
+check("External is presented as the live link", nz.env_label(nz.ENV_EXTERNAL) == "Live link")
+
+section("BUILT-IN REPORTS — the decks that ship with the app")
+check("Both markets have a built-in deck", baseline.markets() == ["C3", "Japan"],
+      str(baseline.markets()))
+_bdb = store._empty_db()
+_added = baseline.seed(_bdb)
+check("Seeding adds six months per market", _added == {"C3": 6, "Japan": 6}, str(_added))
+check("Seeding twice adds nothing", baseline.seed(_bdb) == {})
+check("India ships with no built-in history", not baseline.periods_for("India"))
+check("Built-in months are marked as such",
+      all(baseline.is_baseline(b) for b in _bdb["monthly"]["C3"]))
+check("Seeding writes no import history", not _bdb["sources"])
+
+_bs = _settings()
+_names = {d["raw"] for m in baseline.markets() for b in baseline.blocks_for(m)
+          for d in b["developers"]}
+_bs["dev_aliases"], _ = nz.auto_merge_map(_names)
+_bt = metrics.totals(metrics.select(_bdb, "C3", _bs, {}))
+for label, got, want in [("total tasks", _bt["total_tasks"], 641),
+                         ("error-free tasks", _bt["error_free"], 598),
+                         ("defects", _bt["error_tasks"], 43),
+                         ("test-link defects", _bt["internal"], 37),
+                         ("live-link defects", _bt["external"], 6),
+                         ("observations", _bt["observations"], 38)]:
+    check(f"Built-in C3 reproduces the published {label}", got == want, f"{got} vs {want}")
+check("Built-in C3 reproduces the published quality score", _bt["score"] == 93.29,
+      metrics.fmt_score(_bt["score"]))
+_jt = metrics.totals(metrics.select(_bdb, "Japan", _bs, {}))
+check("Built-in Japan carries six months", _jt["months"] == 6, str(_jt["months"]))
+check("Built-in Japan reports a score", _jt["score"] is not None,
+      metrics.fmt_score(_jt["score"]))
+
+# A workbook for a built-in month must win: task detail beats a deck summary.
+store.add_tasks(_bdb, "C3", _rows(2026, 1, error=1, no_error=9), "jan.xlsx")
+_over = metrics.totals(metrics.select(_bdb, "C3", _bs, {"periods": [(2026, 1)]}))
+check("An uploaded workbook replaces the built-in month for that period",
+      _over["total_tasks"] == 10, str(_over["total_tasks"]))
+check("The other built-in months are untouched",
+      metrics.totals(metrics.select(_bdb, "C3", _bs,
+                                    {"periods": [(2026, 2)]}))["total_tasks"] == 68)
+
+section("SINGLE MONTH — no consolidated section")
+_multi = metrics.select(_db_with("India", tasks=tasks), "India", _settings(), {})
+_single = metrics.select(_db_with("India", tasks=tasks), "India", _settings(),
+                         {"periods": [(2026, 2)]})
+_mp = Presentation(io.BytesIO(deck.build_deck(_multi, {"market_label": "India"})))
+_sp = Presentation(io.BytesIO(deck.build_deck(_single, {"market_label": "India"})))
+_mtext = " ".join(sh.text_frame.text for sl in _mp.slides for sh in sl.shapes
+                  if sh.has_text_frame)
+_stext = " ".join(sh.text_frame.text for sl in _sp.slides for sh in sl.shapes
+                  if sh.has_text_frame)
+check("A multi-month deck still carries the consolidated summary",
+      "QA Summary" in _mtext)
+check("A single-month deck drops the consolidated summary", "QA Summary" not in _stext)
+check("A single-month deck drops the consolidated developer summary",
+      "Developer Summary" not in _stext)
+check("A single-month deck drops the consolidated category breakdown",
+      "Defect Category Breakdown" not in _stext)
+check("A single-month deck keeps that month's own pages",
+      "Developer Report" in _stext and "Quality Score" in _stext)
+check("A single-month deck keeps the closing dashboard",
+      "QA SUMMARY REPORT" in _stext.upper())
+check("A single-month deck is shorter than the multi-month one",
+      len(_sp.slides.__iter__.__self__._sldIdLst) < len(_mp.slides.__iter__.__self__._sldIdLst),
+      f"{len(_sp.slides._sldIdLst)} vs {len(_mp.slides._sldIdLst)} slides")
+# With the monthly pages switched off there is nothing else to show, so the
+# consolidated view must come back.
+_sp2 = Presentation(io.BytesIO(deck.build_deck(
+    _single, {"market_label": "India", "include_monthly": False})))
+_stext2 = " ".join(sh.text_frame.text for sl in _sp2.slides for sh in sl.shapes
+                   if sh.has_text_frame)
+check("One month with no monthly pages still gets the consolidated view",
+      "QA Summary" in _stext2)
+check("The PDF follows the same rule",
+      len(pdf.build_pdf(_single, {"market_label": "India"}))
+      < len(pdf.build_pdf(_multi, {"market_label": "India"})))
+
+section("DEVELOPER TOTALS — the columns add up")
+_dt = metrics.developer_table(_multi)
+_row, _score = deck._dev_totals(_dt)
+_tot_multi = metrics.totals(_multi)
+check("The totals row sums every developer's tasks",
+      _row[5] == _tot_multi["total_tasks"], f"{_row[5]} vs {_tot_multi['total_tasks']}")
+check("The totals row sums the defects", _row[1] == _tot_multi["error_tasks"])
+check("The totals row obeys Error Free = No Error + Observation",
+      _row[4] == _row[2] + _row[3], f"{_row[4]} vs {_row[2]}+{_row[3]}")
+check("The totals row obeys Total = Error + Error Free",
+      _row[5] == _row[1] + _row[4])
+check("The totals row carries the selection's own score",
+      _row[6] == metrics.fmt_score(_tot_multi["score"]), _row[6])
+check("The PDF computes the same totals row", pdf._dev_totals(_dt)[0] == _row)
+
+section("CHARTS — every slice keeps its number")
+from qars import charts                                        # noqa: E402
+for label, args in [("a tiny observation", (176, 10, 165, 1)),
+                    ("no defects at all", (44, 0, 44, 0)),
+                    ("a single task", (1, 0, 1, 0)),
+                    ("everything a defect", (12, 12, 0, 0)),
+                    ("a six-hundred-task month", (641, 43, 560, 38))]:
+    try:
+        png = charts.composition_pie(*args)
+        check(f"Composition pie renders with {label}", len(png) > 5_000, f"{len(png)} B")
+    except Exception as exc:                                   # noqa: BLE001
+        check(f"Composition pie renders with {label}", False, repr(exc))
+check("Composition pie handles an empty selection",
+      len(charts.composition_pie(0, 0, 0, 0)) > 1_000)
+_many = [{"category": c, "total": 1, "pct": 100 / 7} for c in
+         ["Content Related", "Design Related", "Image Related", "Video Related",
+          "Redirect Links", "Navigation Related", "Functionality"]]
+check("Category donut renders when every slice is too thin to label",
+      len(charts.category_donut(_many, centre_total=7)) > 5_000)
+check("Quality trend no longer accepts a target",
+      "target" not in inspect.signature(charts.quality_trend).parameters,
+      str(list(inspect.signature(charts.quality_trend).parameters)))
+
+section("SLIDE GEOMETRY — nothing runs off the page")
+# Charts are now sized from the panel they sit in rather than from constants
+# that happened to fit once. This is the guard on that: every shape on every
+# slide, for the shapes of report that exercise the different layouts.
+from pptx.util import Inches as _In                            # noqa: E402
+
+_SLIDE_W, _SLIDE_H = _In(13.333), _In(7.5)
+_TOL = _In(0.06)
+
+
+def _overflows(pptx_bytes):
+    bad = []
+    prs = Presentation(io.BytesIO(pptx_bytes))
+    for n, slide in enumerate(prs.slides, 1):
+        for sh in slide.shapes:
+            if sh.left is None or sh.top is None:
+                continue
+            w, h = sh.width or 0, sh.height or 0
+            if (sh.left < -_TOL or sh.top < -_TOL
+                    or sh.left + w > _SLIDE_W + _TOL
+                    or sh.top + h > _SLIDE_H + _TOL):
+                bad.append(f"slide {n}: {sh.shape_type} at "
+                           f"({sh.left / 914400:.2f}, {sh.top / 914400:.2f}) "
+                           f"{w / 914400:.2f}x{h / 914400:.2f}in")
+    return bad
+
+
+_geom_db = store._empty_db()
+baseline.seed(_geom_db)
+_geom_s = _settings()
+_geom_s["dev_aliases"], _ = nz.auto_merge_map(
+    {d["raw"] for m in baseline.markets() for b in baseline.blocks_for(m)
+     for d in b["developers"]})
+_cases = [
+    ("six months from a built-in report",
+     metrics.select(_geom_db, "C3", _geom_s, {}), {}),
+    ("a single month",
+     metrics.select(_geom_db, "C3", _geom_s, {"periods": [(2026, 3)]}), {}),
+    ("a month with zero defects",
+     metrics.select(_db_with("India", tasks=_rows(2026, 6, error=0, no_error=44)),
+                    "India", _settings(), {}), {}),
+    ("every optional section switched on",
+     metrics.select(_db_with("India", tasks=tasks), "India", _settings(), {}),
+     {"include_aging": True, "include_critical": True}),
+]
+for label, _sel, _extra in _cases:
+    _opts = {"market_label": "C3", "org": "Acme"}
+    _opts.update(_extra)
+    _bad = _overflows(deck.build_deck(_sel, _opts))
+    check(f"No shape runs off the slide with {label}", not _bad,
+          "; ".join(_bad[:2]) if _bad else "")
 
 # ==========================================================================
 print("\n" + "=" * 62)

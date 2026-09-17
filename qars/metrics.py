@@ -39,6 +39,13 @@ MONTH_FULL = ["January", "February", "March", "April", "May", "June", "July",
 
 NA = "N/A"
 
+# Score bands. These are the product's own reading of a score — the same
+# thresholds that colour it green, amber or red everywhere — not a target
+# anybody sets. There is deliberately no configurable target: a report states
+# what the quality was, and moving the goalposts is not the report's job.
+BAND_GOOD = 95.0
+BAND_WATCH = 90.0
+
 
 def month_label(y, m):
     return f"{MONTH_ABBR[m - 1]} {y}"
@@ -266,8 +273,7 @@ def totals(sel):
         internal = max(agg["error"] - keep_ext, 0)
 
     devs = developer_table(sel)
-    watch = float(sel.settings.get("watch_score", 90.0))
-    below = [d for d in devs if d["score"] is not None and d["score"] < watch]
+    below = [d for d in devs if d["score"] is not None and d["score"] < BAND_WATCH]
     crit = sum(1 for r in sel.tasks
                if r["status"] == nz.STATUS_ERR and r.get("severity") == "Critical")
 
@@ -496,8 +502,6 @@ def insights(sel):
     t = totals(sel)
     devs = developer_table(sel)
     cats = category_table(sel)
-    target = float(sel.settings.get("target_score", 95.0))
-    watch = float(sel.settings.get("watch_score", 90.0))
     out = []
 
     if t["score"] is not None:
@@ -505,13 +509,13 @@ def insights(sel):
                     "text": f"overall quality score across {t['period_label']}."})
     if t["error_tasks"]:
         out.append({"icon": "shield", "value": f"{t['internal_pct']:.2f}%",
-                    "text": "of defects were caught internally, before release."})
+                    "text": "of defects were found on test links, before the page went live."})
     if devs:
-        at_target = sum(1 for d in devs if d["score"] is not None and d["score"] >= target)
-        out.append({"icon": "chart", "value": str(at_target),
-                    "text": f"of {len(devs)} developers scored {target:.0f}% or higher."})
+        at_band = sum(1 for d in devs if d["score"] is not None and d["score"] >= BAND_GOOD)
+        out.append({"icon": "chart", "value": str(at_band),
+                    "text": f"of {len(devs)} developers scored {BAND_GOOD:.0f}% or higher."})
         out.append({"icon": "people", "value": str(t["below_target"]),
-                    "text": f"developers sit below the {watch:.0f}% benchmark."})
+                    "text": f"developers scored below {BAND_WATCH:.0f}%."})
     if t["total_tasks"]:
         out.append({"icon": "check", "value": f"{t['error_free']}",
                     "text": f"of {t['total_tasks']} tasks were error free, including "
@@ -531,8 +535,6 @@ def recommendations(sel):
     rows = monthly_series(sel)
     cats = category_table(sel)
     sev = {s["severity"]: s["count"] for s in severity_table(sel)}
-    target = float(sel.settings.get("target_score", 95.0))
-    watch = float(sel.settings.get("watch_score", 90.0))
     out = []
 
     if t["score"] is None:
@@ -540,16 +542,17 @@ def recommendations(sel):
                  "text": "Widen the filters, or import the audit sheet for this period."}]
 
     if cats and cats[0]["pct"] >= 40:
-        out.append({"icon": "bug", "title": f"Target {cats[0]['category'].lower()} defects",
+        out.append({"icon": "bug", "title": f"Focus on {cats[0]['category'].lower()} defects",
                     "text": f"{cats[0]['category']} accounts for {cats[0]['pct']:.2f}% of all "
                             f"defects ({cats[0]['total']} of {t['error_tasks']}). A focused "
                             "checklist for this one category would move the score more than "
                             "any other single action."})
     if t["external"] > 0:
-        out.append({"icon": "globe", "title": "Close the external leakage",
+        out.append({"icon": "globe", "title": "Catch these before the page goes live",
                     "text": f"{t['external']} defect(s) ({t['external_pct']:.2f}%) were found on "
-                            "live links rather than in test, so they reached the client. "
-                            "Tighten the pre-release check for the categories involved."})
+                            "live links rather than on test links. QA caught them either way, "
+                            "but tightening the pre-release check for the categories involved "
+                            "would catch them earlier."})
     if sev.get("Critical"):
         out.append({"icon": "shield", "title": f"{sev['Critical']} critical defect(s) logged",
                     "text": "Review each one at the next QA huddle and confirm the root cause "
@@ -558,8 +561,8 @@ def recommendations(sel):
         names = ", ".join(t["below_names"][:4])
         more = f" and {t['below_target'] - 4} other(s)" if t["below_target"] > 4 else ""
         out.append({"icon": "people", "title": f"Coach {t['below_target']} developer(s)",
-                    "text": f"{names}{more} scored below the {watch:.0f}% benchmark. Pair them "
-                            "with a reviewer on the defect category they hit most often."})
+                    "text": f"{names}{more} scored below {BAND_WATCH:.0f}%. Pair them with a "
+                            "reviewer on the defect category they hit most often."})
     if len(rows) > 1:
         first, last = rows[0], rows[-1]
         if first["score"] is not None and last["score"] is not None:
@@ -579,10 +582,10 @@ def recommendations(sel):
         out.append({"icon": "clipboard", "title": f"{t['observations']} observation(s) recorded",
                     "text": f"{pct:.2f}% of tasks were error free but carried a remark. These "
                             "count as passes, but a rising trend often precedes real defects."})
-    if t["score"] >= target and not out:
-        out.append({"icon": "check", "title": "Holding above target",
-                    "text": f"The period closed at {fmt_score(t['score'])}, at or above the "
-                            f"{target:.0f}% target. Keep the current review cadence."})
+    if t["score"] >= BAND_GOOD and not out:
+        out.append({"icon": "check", "title": "Quality is holding",
+                    "text": f"The period closed at {fmt_score(t['score'])}, at or above "
+                            f"{BAND_GOOD:.0f}%. Keep the current review cadence."})
     return out[:6]
 
 
@@ -606,7 +609,7 @@ def data_warnings(db, market, settings):
     if unmerged:
         warn.append({"kind": "aliases", "severity": "info",
                      "text": f"{len(unmerged)} name variant(s) have not been merged yet. "
-                             "Open the Data manager tab and press Merge all.",
+                             "Open the Data Manager page and press Merge all.",
                      "detail": unmerged})
     still = {c: v for c, v in ambiguous.items()
              if len({nz.resolve_name(x, lookup) for x in v["members"]}) > 1}

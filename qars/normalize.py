@@ -62,6 +62,18 @@ ENV_INTERNAL = "Internal"
 ENV_EXTERNAL = "External"
 
 
+# How the two buckets are described to a reader. The stored values stay
+# "Internal" and "External" so an exported database still restores, but neither
+# word appears on screen: both buckets are defects this QA team found itself,
+# and the only thing that differs is whether the page was already live when
+# they found it.
+ENV_LABELS = {ENV_INTERNAL: "Test link", ENV_EXTERNAL: "Live link"}
+
+
+def env_label(value):
+    return ENV_LABELS.get(value, value or "")
+
+
 def norm_env(value):
     key = _clean(value).lower()
     if not key:
