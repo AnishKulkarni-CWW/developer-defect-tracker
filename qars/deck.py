@@ -222,6 +222,32 @@ class Kit:
 # client's own decks are readable precisely because each slide answers a
 # single question.
 # ==========================================================================
+NOTE_RULE = ("Error Free = No Error + Observation   \u2022   "
+             "Total Tasks = Error + Error Free   \u2022   "
+             "Quality Score = Error Free \u00f7 Total Tasks")
+
+
+def _brand(org, market):
+    """
+    "Acme India", or just "India" when no brand is set.
+
+    The report is brand-neutral: whoever runs it types their own organisation
+    on the Settings page, and an empty one must not leave a stray space or a
+    placeholder name on the cover.
+    """
+    org = (org or "").strip()
+    return f"{org} {market}".strip() if org else market
+
+
+def _dev_totals(devs):
+    """The column sums that belong under any per-developer table."""
+    agg = {k: sum(d[k] for d in devs)
+           for k in ("error", "no_error", "observation", "error_free", "total")}
+    score = metrics.compute(agg["error"], agg["no_error"], agg["observation"])["score"]
+    return ("Total", agg["error"], agg["no_error"], agg["observation"],
+            agg["error_free"], agg["total"], FS(score)), score
+
+
 def build_deck(sel, options):
     """Render a Selection to .pptx bytes."""
     prs = Presentation()
@@ -231,35 +257,44 @@ def build_deck(sel, options):
 
     o = options or {}
     market = o.get("market_label") or sel.market
-    org = o.get("org", "BMW")
+    org = (o.get("org") or "").strip()
     rows = metrics.monthly_series(sel)
     tot = metrics.totals(sel)
     period = tot["period_label"]
-    foot = f"{org} {market} \u2013 QA Quality Report \u2022 {period}"
+    foot = f"{_brand(org, market)} \u2013 QA Quality Report \u2022 {period}"
 
     _title_slide(k, org, market, period, tot, o)
 
-    if o.get("include_monthly", True) and rows:
+    monthly = o.get("include_monthly", True) and bool(rows)
+    if monthly:
         for i, r in enumerate(rows, 1):
             _month_divider(k, r, market, org, i, len(rows))
             _month_score(k, sel, r, market, foot)
             _month_developers(k, sel, r, market, foot)
             _month_defects(k, sel, r, market, foot)
 
-    _period_divider(k, tot, market, org, period, len(rows))
+    # One month selected: the consolidated section would restate the monthly
+    # pages line for line, because consolidating a single month is that month.
+    # The monthly pages and the closing dashboard carry everything, so the
+    # repetition is dropped rather than printed twice.
+    # It is only dropped when the monthly pages are actually there — with the
+    # monthly section switched off, the consolidated view is the whole report.
+    consolidated = not (monthly and len(rows) == 1)
 
-    if o.get("include_summary", True):
-        _qa_summary(k, sel, tot, rows, market, org, period, foot)
-    if o.get("include_developer", True):
-        _developer_summary(k, sel, market, org, period, foot)
-    if o.get("include_category", True):
-        _category_breakdown(k, sel, tot, market, org, period, foot)
-    if o.get("include_aging", False):
-        _aging(k, sel, market, org, period, foot)
-    if o.get("include_critical", False):
-        _critical(k, sel, market, org, period, foot)
-    if o.get("include_recommendations", True):
-        _recommendations(k, sel, market, org, period, foot, o.get("notes"))
+    if consolidated:
+        _period_divider(k, tot, market, org, period, len(rows))
+        if o.get("include_summary", True):
+            _qa_summary(k, sel, tot, rows, market, org, period, foot)
+        if o.get("include_developer", True):
+            _developer_summary(k, sel, market, org, period, foot)
+        if o.get("include_category", True):
+            _category_breakdown(k, sel, tot, market, org, period, foot)
+        if o.get("include_aging", False):
+            _aging(k, sel, market, org, period, foot)
+        if o.get("include_critical", False):
+            _critical(k, sel, market, org, period, foot)
+        if o.get("include_recommendations", True):
+            _recommendations(k, sel, market, org, period, foot, o.get("notes"))
     if o.get("include_dashboard", True):
         _dashboard(k, sel, tot, rows, market, period, foot)
 
@@ -278,7 +313,7 @@ def _title_slide(k, org, market, period, tot, o):
     s = k.slide(bg=T.NAVY)
     k.rect(s, 0, 4.15, SLIDE_W, SLIDE_H - 4.15, fill=T.NAVY_DK, line=None, radius=0)
     k.text(s, 1.0, 1.65, 11.3, 0.5,
-           [[{"t": f"{org.upper()} {market.upper()}", "sz": 15, "b": True, "c": "8FB3E8",
+           [[{"t": _brand(org, market).upper(), "sz": 15, "b": True, "c": "8FB3E8",
               "f": T.FONT_HEAD}]])
     k.text(s, 1.0, 2.15, 11.3, 1.2,
            [[{"t": "Quality Assurance Report", "sz": 42, "b": True, "c": T.WHITE,
@@ -397,14 +432,19 @@ def _month_score(k, sel, r, market, foot):
     rw = SLIDE_W - MARGIN - rx
     k.rect(s, rx, py, rw, ph)
     k.bar(s, rx + 0.14, py + 0.14, rw - 0.28, "Task Composition", h=0.32, size=10.5)
-    k.image(s, charts.composition_bar(r["total"], r["error"], r["no_error"],
-                                      r["observation"], w=rw - 0.6, h=1.15),
-            rx + 0.30, py + 0.72, rw - 0.6)
-    k.text(s, rx + 0.30, py + 2.20, rw - 0.60, 1.9,
-           [[{"t": "Reading this bar", "sz": 12, "b": True, "c": T.NAVY}],
+    # Sized against the panel, not a guessed constant: a chart that overruns
+    # its card is worse than a slightly smaller one.
+    cw = min(rw - 0.6, 3.5)
+    iy, ch = py + 0.58, cw * 0.92
+    ty = iy + ch + 0.12
+    k.image(s, charts.composition_pie(r["total"], r["error"], r["no_error"],
+                                      r["observation"], w=cw, h=ch),
+            rx + (rw - cw) / 2, iy, cw)
+    k.text(s, rx + 0.30, ty, rw - 0.60, max(0.6, ph - (ty - py) - 0.12),
+           [[{"t": "Reading this chart", "sz": 12, "b": True, "c": T.NAVY}],
             [{"t": f"{r['error_free']:,} of {r['total']:,} tasks were error free. "
                    f"{r['observation']:,} of those carried an observation \u2014 they are "
-                   "counted inside the green and teal segments, never added on top.",
+                   "counted inside the error-free slices, never added on top.",
               "sz": 10.5, "c": T.TEXT}],
             [{"t": " ", "sz": 6}],
             [{"t": f"{r['error']:,} task(s) contained a defect.", "sz": 10.5, "c": T.TEXT}]],
@@ -431,12 +471,20 @@ def _month_developers(k, sel, r, market, foot):
         body = [(d["name"], d["error"], d["no_error"], d["observation"], d["error_free"],
                  d["total"], FS(d["score"])) for d in devs]
         colors = {(i, 6): T.score_color(d["score"]) for i, d in enumerate(devs)}
+        # The column sums, so the table adds up on the page instead of asking
+        # the reader to do it.
+        total_row, total_score = _dev_totals(devs)
+        body.append(total_row)
+        colors[(len(devs), 0)] = T.NAVY
+        colors[(len(devs), 6)] = T.score_color(total_score)
         k.table(s, MARGIN + 0.20, py + 0.64, w - 0.40,
                 ["Developer Name", "Error", "No Error", "Observation", "Error Free",
                  "Total Tasks", "Quality Score"], body,
                 col_w=[3.2, 1.0, 1.1, 1.3, 1.2, 1.1, 1.5],
                 row_h=0.30, font=11, head_font=10.5, cell_colors=colors,
-                fill_h=ph - 0.86, max_row_h=0.44)
+                fill_h=ph - 1.24, max_row_h=0.44)
+        k.text(s, MARGIN + 0.20, py + ph - 0.38, w - 0.40, 0.30,
+               [[{"t": NOTE_RULE, "sz": 9, "i": True, "c": T.TEXT_MUTED}]])
     else:
         k.text(s, MARGIN + 0.4, py + 1.4, w - 0.8, 0.4,
                [[{"t": "No developer detail stored for this month.", "sz": 12,
@@ -456,7 +504,7 @@ def _month_defects(k, sel, r, market, foot):
     lw = 8.1
     k.rect(s, MARGIN, py, lw, ph)
     k.bar(s, MARGIN + 0.14, py + 0.14, lw - 0.28,
-          f"Internal vs External \u2013 {label}", h=0.32, size=10.5)
+          f"Defects by Link Type \u2013 {label}", h=0.32, size=10.5)
     if cats:
         body = [(c["category"], c["internal"], c["external"], c["total"], f"{c['pct']:.2f}%")
                 for c in cats] + [("Total", ti, te, ti + te, "100.00%")]
@@ -464,8 +512,7 @@ def _month_defects(k, sel, r, market, foot):
                   for i, c in enumerate(cats)}
         colors[(len(cats), 0)] = T.NAVY
         k.table(s, MARGIN + 0.20, py + 0.64, lw - 0.40,
-                ["Error Type", "Test Link (Internal)", "Live Link (External)",
-                 "Total", "% of Total"], body,
+                ["Error Type", "Test Link", "Live Link", "Total", "% of Total"], body,
                 col_w=[2.6, 1.5, 1.5, 0.9, 1.1], row_h=0.34, font=11.5, head_font=10,
                 cell_colors=colors, fill_h=ph - 0.86, max_row_h=0.46)
     else:
@@ -479,16 +526,19 @@ def _month_defects(k, sel, r, market, foot):
     k.rect(s, rx, py, rw, ph)
     k.bar(s, rx + 0.14, py + 0.14, rw - 0.28, "Category Share", h=0.32, size=10.5)
     if cats:
-        dh = min(3.1, rw - 0.5)
+        dh = min(3.4, rw - 0.34)
+        iy = py + 0.58
+        ty = iy + dh + 0.12
         k.image(s, charts.category_donut(cats[:6], w=dh, h=dh, centre_total=r["error"]),
-                rx + (rw - dh) / 2, py + 0.70, dh)
-        k.text(s, rx + 0.24, py + 4.05, rw - 0.48, 2.2,
-               [[{"t": f"{ti} caught internally", "sz": 12.5, "b": True, "c": T.ORANGE}],
-                [{"t": "Found on test links, before the work reached the client.",
+                rx + (rw - dh) / 2, iy, dh)
+        k.text(s, rx + 0.24, ty, rw - 0.48, max(0.7, ph - (ty - py) - 0.12),
+               [[{"t": f"{ti} on test links", "sz": 12.5, "b": True, "c": T.BRAND}],
+                [{"t": "Caught internally, before the page went live.",
                   "sz": 10, "c": T.TEXT}],
                 [{"t": " ", "sz": 7}],
-                [{"t": f"{te} found externally", "sz": 12.5, "b": True, "c": T.BLUE}],
-                [{"t": "Found on live links \u2014 these escaped the internal check.",
+                [{"t": f"{te} on live links", "sz": 12.5, "b": True, "c": T.BLUE}],
+                [{"t": "Also caught internally by QA \u2014 found after the page "
+                       "went live, not reported by the client.",
                   "sz": 10, "c": T.TEXT}]], spacing=1.2)
     k.footer(s, foot, label)
 
@@ -498,17 +548,16 @@ def _month_defects(k, sel, r, market, foot):
 # --------------------------------------------------------------------------
 def _qa_summary(k, sel, tot, rows, market, org, period, foot):
     s = k.slide()
-    k.head(s, f"{org} {market}", f"QA Summary \u2013 {period}")
-    watch = float(sel.settings.get("watch_score", 90))
+    k.head(s, _brand(org, market), f"QA Summary \u2013 {period}")
     kpi_rows = [("Total Tasks Audited", f"{tot['total_tasks']:,}"),
                 ("Error Tasks (defects)", f"{tot['error_tasks']:,}"),
                 ("No Error Tasks", f"{tot['no_error']:,}"),
                 ("Observations", f"{tot['observations']:,}"),
                 ("Error-Free Tasks", f"{tot['error_free']:,}"),
-                ("Internal Defects", f"{tot['internal']} ({tot['internal_pct']:.2f}%)"),
-                ("External Defects", f"{tot['external']} ({tot['external_pct']:.2f}%)"),
+                ("Defects on Test Links", f"{tot['internal']} ({tot['internal_pct']:.2f}%)"),
+                ("Defects on Live Links", f"{tot['external']} ({tot['external_pct']:.2f}%)"),
                 ("Developers Audited", f"{tot['developers']}"),
-                (f"Developers Below {watch:.0f}%", f"{tot['below_target']}"),
+                (f"Developers Below {metrics.BAND_WATCH:.0f}%", f"{tot['below_target']}"),
                 ("Months Covered", f"{tot['months']}"),
                 ("Overall Quality Score", FS(tot["score"])),
                 ("Average Monthly Score", FS(tot["avg_monthly_score"]))]
@@ -527,8 +576,7 @@ def _qa_summary(k, sel, tot, rows, market, org, period, foot):
     rw = SLIDE_W - MARGIN - rx
     k.rect(s, rx, py, rw, ph)
     k.bar(s, rx + 0.14, py + 0.14, rw - 0.28, "Quality Score by Month", h=0.32, size=10.5)
-    k.image(s, charts.quality_trend(rows, w=rw - 0.4, h=2.6,
-                                    target=float(sel.settings.get("target_score", 95))),
+    k.image(s, charts.quality_trend(rows, w=rw - 0.4, h=2.6),
             rx + 0.20, py + 0.66, rw - 0.4)
     mb = [(r["label"], r["total"], r["error"], r["error_free"], FS(r["score"]))
           for r in rows]
@@ -548,7 +596,7 @@ def _developer_summary(k, sel, market, org, period, foot):
             continue
         s = k.slide()
         suffix = f" ({page} of {len(pages)})" if len(pages) > 1 else ""
-        k.head(s, f"{org} {market}", f"Developer Summary \u2013 {period}{suffix}")
+        k.head(s, _brand(org, market), f"Developer Summary \u2013 {period}{suffix}")
         py, ph = 1.10, 5.72
         w = SLIDE_W - MARGIN * 2
         k.rect(s, MARGIN, py, w, ph)
@@ -557,25 +605,34 @@ def _developer_summary(k, sel, market, org, period, foot):
         body = [(d["name"], d["error"], d["no_error"], d["observation"], d["error_free"],
                  d["total"], FS(d["score"])) for d in chunk]
         colors = {(i, 6): T.score_color(d["score"]) for i, d in enumerate(chunk)}
+        # Only the final page carries the sums: a running subtotal halfway
+        # through an alphabetical list is a number nobody asked for.
+        if page == len(pages):
+            total_row, total_score = _dev_totals(devs)
+            body.append(total_row)
+            colors[(len(chunk), 0)] = T.NAVY
+            colors[(len(chunk), 6)] = T.score_color(total_score)
         k.table(s, MARGIN + 0.20, py + 0.64, w - 0.40,
                 ["Developer Name", "Error", "No Error", "Observation", "Error Free",
                  "Total Tasks", "Quality Score"], body,
                 col_w=[3.2, 1.0, 1.1, 1.3, 1.2, 1.1, 1.5],
                 row_h=0.32, font=11, head_font=10.5, cell_colors=colors,
-                fill_h=ph - 0.86, max_row_h=0.44)
+                fill_h=ph - 1.24, max_row_h=0.44)
+        k.text(s, MARGIN + 0.20, py + ph - 0.38, w - 0.40, 0.30,
+               [[{"t": NOTE_RULE, "sz": 9, "i": True, "c": T.TEXT_MUTED}]])
         k.footer(s, foot, "Developer summary")
 
 
 def _category_breakdown(k, sel, tot, market, org, period, foot):
     cats = metrics.category_table(sel)
     s = k.slide()
-    k.head(s, f"{org} {market}", f"Defect Category Breakdown \u2013 {period}")
+    k.head(s, _brand(org, market), f"Defect Category Breakdown \u2013 {period}")
     py, ph = 1.10, 5.72
     lw = 8.1
     ti = sum(c["internal"] for c in cats)
     te = sum(c["external"] for c in cats)
     k.rect(s, MARGIN, py, lw, ph)
-    k.bar(s, MARGIN + 0.14, py + 0.14, lw - 0.28, "Defects by Category and Origin",
+    k.bar(s, MARGIN + 0.14, py + 0.14, lw - 0.28, "Defects by Category and Link Type",
           h=0.32, size=10.5)
     if cats:
         body = [(c["category"], c["internal"], c["external"], c["total"], f"{c['pct']:.2f}%")
@@ -584,8 +641,8 @@ def _category_breakdown(k, sel, tot, market, org, period, foot):
                   for i, c in enumerate(cats)}
         colors[(len(cats), 0)] = T.NAVY
         k.table(s, MARGIN + 0.20, py + 0.64, lw - 0.40,
-                ["Defect Category", "Test Link (Internal)", "Live Link (External)",
-                 "Total Defects", "% of Total"], body,
+                ["Defect Category", "Test Link", "Live Link", "Total Defects",
+                 "% of Total"], body,
                 col_w=[2.6, 1.5, 1.5, 1.1, 1.1], row_h=0.34, font=11.5, head_font=10,
                 cell_colors=colors, fill_h=ph - 0.86, max_row_h=0.46)
     else:
@@ -598,20 +655,23 @@ def _category_breakdown(k, sel, tot, market, org, period, foot):
     k.rect(s, rx, py, rw, ph)
     k.bar(s, rx + 0.14, py + 0.14, rw - 0.28, "Category Share", h=0.32, size=10.5)
     if cats:
-        dh = min(3.1, rw - 0.5)
+        bar_h, chart_h = 0.30, 1.20
+        dh = min(3.3, rw - 0.34, ph - 0.58 - 0.12 - bar_h - 0.10 - chart_h - 0.10)
+        iy = py + 0.58
+        by = iy + dh + 0.12
         k.image(s, charts.category_donut(cats[:7], w=dh, h=dh,
                                          centre_total=tot["error_tasks"]),
-                rx + (rw - dh) / 2, py + 0.70, dh)
-        k.bar(s, rx + 0.14, py + 4.05, rw - 0.28, "Internal vs External", h=0.30, size=9.5)
-        k.image(s, charts.internal_external(ti, te, w=rw - 0.5, h=1.5),
-                rx + 0.25, py + 4.48, rw - 0.5)
+                rx + (rw - dh) / 2, iy, dh)
+        k.bar(s, rx + 0.14, by, rw - 0.28, "Test vs Live Links", h=bar_h, size=9.5)
+        k.image(s, charts.internal_external(ti, te, w=rw - 0.5, h=chart_h),
+                rx + 0.25, by + bar_h + 0.10, rw - 0.5)
     k.footer(s, foot, "Defect categories")
 
 
 def _aging(k, sel, market, org, period, foot):
     rows, ref = metrics.aging_table(sel)
     s = k.slide()
-    k.head(s, f"{org} {market}", f"Aging Analysis \u2013 {period}")
+    k.head(s, _brand(org, market), f"Aging Analysis \u2013 {period}")
     py, ph = 1.10, 5.72
     lw = 8.1
     k.rect(s, MARGIN, py, lw, ph)
@@ -646,7 +706,7 @@ def _aging(k, sel, market, org, period, foot):
 def _critical(k, sel, market, org, period, foot):
     rows, total = metrics.critical_defects(sel, limit=13)
     s = k.slide()
-    k.head(s, f"{org} {market}", f"Critical Defects \u2013 {period}")
+    k.head(s, _brand(org, market), f"Critical Defects \u2013 {period}")
     py, ph = 1.10, 5.72
     w = SLIDE_W - MARGIN * 2
     k.rect(s, MARGIN, py, w, ph)
@@ -678,7 +738,7 @@ def _critical(k, sel, market, org, period, foot):
 def _recommendations(k, sel, market, org, period, foot, note):
     recs = metrics.recommendations(sel)
     s = k.slide()
-    k.head(s, f"{org} {market}", f"Key QA Recommendations \u2013 {period}")
+    k.head(s, _brand(org, market), f"Key QA Recommendations \u2013 {period}")
     py, ph = 1.10, 5.72
     w = SLIDE_W - MARGIN * 2
     k.rect(s, MARGIN, py, w, ph)
@@ -717,9 +777,9 @@ def _dashboard(k, sel, tot, rows, market, period, foot):
             (f"{tot['error_free']:,}", "Error Free Tasks", T.GREEN, "check", None),
             (f"{tot['observations']:,}", "Observations", T.TEAL, "clipboard", "in error free"),
             (f"{tot['error_tasks']:,}", "Total Defects", T.RED, "bug", None),
-            (f"{tot['internal']:,}", "Internal Defects", T.ORANGE, "building",
+            (f"{tot['internal']:,}", "Test Link Defects", T.ORANGE, "building",
              f"{tot['internal_pct']:.2f}%"),
-            (f"{tot['external']:,}", "External Defects", T.NAVY, "globe",
+            (f"{tot['external']:,}", "Live Link Defects", T.NAVY, "globe",
              f"{tot['external_pct']:.2f}%"),
             (f"{tot['developers']}", "Developers Audited", T.PURPLE, "people", None),
             (FS(tot["score"]), "Overall Quality Score", T.TEAL, "target", None)]
@@ -745,8 +805,7 @@ def _dashboard(k, sel, tot, rows, market, period, foot):
     k.rect(s, p1x, py, p1w, ph)
     k.bar(s, p1x + 0.10, py + 0.10, p1w - 0.20, "Quality Score Trend (Monthly)",
           h=0.30, size=10)
-    k.image(s, charts.quality_trend(rows, w=p1w - 0.32, h=2.08,
-                                    target=float(sel.settings.get("target_score", 95))),
+    k.image(s, charts.quality_trend(rows, w=p1w - 0.32, h=2.08),
             p1x + 0.16, py + 0.50, p1w - 0.32)
     scored = [r for r in rows if r["score"] is not None]
     if scored:
@@ -770,13 +829,13 @@ def _dashboard(k, sel, tot, rows, market, period, foot):
     k.bar(s, p2x + 0.10, py + 0.10, p2w - 0.20, "Defect Category Breakdown", h=0.30, size=10)
     cats = metrics.category_table(sel)
     if cats:
-        k.image(s, charts.category_donut(cats[:6], w=1.70, h=1.70,
+        k.image(s, charts.category_donut(cats[:6], w=2.10, h=2.10,
                                          centre_total=tot["error_tasks"]),
-                p2x + 0.28, py + 0.48, 1.70)
+                p2x + 0.14, py + 0.46, 2.10)
         rowsc = [(c["category"], c["total"], f"{c['pct']:.2f}%") for c in cats[:7]]
         colors = {(i, 0): T.CATEGORY_COLORS.get(c["category"], T.TEXT)
                   for i, c in enumerate(cats[:7])}
-        k.table(s, p2x + 1.98, py + 0.52, p2w - 2.10, ["Category", "No.", "%"], rowsc,
+        k.table(s, p2x + 2.30, py + 0.52, p2w - 2.42, ["Category", "No.", "%"], rowsc,
                 col_w=[2.5, 0.8, 1.2], row_h=0.24, header_h=0.26, font=6.4,
                 head_font=6.4, cell_colors=colors, max_h=ph - 0.80)
     else:

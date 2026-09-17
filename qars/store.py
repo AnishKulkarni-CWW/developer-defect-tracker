@@ -87,9 +87,7 @@ def _default_settings():
     return {
         "schema_version": SCHEMA_VERSION,
         "dev_aliases": {},          # canonical name -> [raw spellings]
-        "target_score": 95.0,
-        "watch_score": 90.0,
-        "org_name": "BMW",
+        "org_name": "",             # whatever brand this report is for
         "prepared_by": "",
     }
 

@@ -35,7 +35,8 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from qars import charts, deck, ingest, metrics, normalize as nz, pdf, store, theme as T  # noqa: E402
+from qars import (baseline, charts, deck, ingest, metrics, normalize as nz, pdf,  # noqa: E402
+                  store, theme as T)
 
 
 # --------------------------------------------------------------------------
@@ -66,14 +67,21 @@ WIDE_IMG = _wide(st.image)
 # themselves, so a cache entry is reused until the numbers actually change.
 # --------------------------------------------------------------------------
 @st.cache_data(show_spinner=False, max_entries=48)
-def _dash_charts(rows, cats, error_total, target, comp):
+def _dash_charts(rows, cats, error_total, comp):
     return {
-        "trend": charts.quality_trend(rows, w=6.0, h=3.0, target=target),
-        "donut": charts.category_donut(cats[:6], w=3.2, h=3.2,
+        "trend": charts.quality_trend(rows, w=6.0, h=3.0),
+        "donut": charts.category_donut(cats[:6], w=3.4, h=3.4,
                                        centre_total=error_total) if cats else None,
-        "comp": charts.composition_bar(*comp, w=11.0, h=1.5),
+        "comp": charts.composition_pie(*comp, w=3.4, h=3.1),
     }
 
+
+# The identity the whole product rests on. Printed under every table that
+# adds these columns up, so the arithmetic is never something a reader has to
+# take on trust.
+RULE_NOTE = ("Error Free = No Error + Observation   •   "
+             "Total Tasks = Error + Error Free   •   "
+             "Quality Score = Error Free ÷ Total Tasks")
 
 APP_TITLE = "QA Report Studio"
 APP_TAGLINE = "Defects to better products"
@@ -87,7 +95,7 @@ PAGES = [
     ("results", "📊", "Results & Insights", "The full analysis, ready to export."),
     ("data", "🗄️", "Data Manager", "Merge developer names, manage periods and backups."),
     ("compare", "⚖️", "Compare", "Put markets side by side."),
-    ("settings", "⚙️", "Settings", "Branding, benchmarks and stored data."),
+    ("settings", "⚙️", "Settings", "Branding, appearance and stored data."),
     ("help", "❓", "Help", "How every number on the page is worked out."),
 ]
 PAGE_BY_KEY = {p[0]: p for p in PAGES}
@@ -124,6 +132,16 @@ def boot():
     # widget key, so the form is rebuilt from what is actually available rather
     # than holding a year or a developer that has just been deleted.
     st.session_state.setdefault("cfg_epoch", 0)
+
+    # Reports issued before this tool existed ship with it. Re-seeded on every
+    # run rather than once, so clearing the data or restoring an older export
+    # cannot leave a market with a hole in its published history.
+    if baseline.seed(st.session_state.db):
+        # Those decks bring a roster of their own. Without the same name-folding
+        # an upload triggers, one person spelled two ways is counted twice and
+        # the market reports more developers than its own deck published.
+        _apply_auto_merge()
+        persist()
 
 
 def dark_theme():
@@ -303,20 +321,6 @@ def rank_rows(top):
     md("".join(out))
 
 
-def storage_notice():
-    """
-    Say plainly what happens to the data, because the answer differs between a
-    laptop and a shared server and getting it wrong loses someone's work.
-    """
-    if store.storage_mode() != "session":
-        return
-    md('<div class="qrs-info">☁️ <b>Running on a hosted server.</b> Nothing is saved to '
-       'disk here: your data lives in this browser session only, and is cleared when '
-       'the tab closes or the server restarts. Other people using this link get their '
-       'own separate copy. Use <b>Export database</b> on the Data Manager page to keep '
-       'your work, and <b>Restore database</b> to pick it back up.</div>')
-
-
 def empty_state(icon, title, text, cta=None, page=None, key="cta"):
     md(f'<div class="qrs-panel" style="text-align:center;padding:38px 24px;">'
        f'<div style="font-size:2.6rem;line-height:1">{icon}</div>'
@@ -353,11 +357,11 @@ def sidebar():
             go("help")
 
         who = (st.session_state.settings.get("prepared_by") or "").strip()
-        org = st.session_state.settings.get("org_name") or "—"
+        org = (st.session_state.settings.get("org_name") or "").strip()
         initials = "".join(w[0] for w in who.split()[:2]).upper() if who else "QA"
         md(f'<div class="qrs-foot"><div class="av">{esc(initials)}</div>'
            f'<div><div class="n">{esc(who or "QA team")}</div>'
-           f'<div class="s">{esc(org)} &middot; {esc(store.storage_mode())} storage</div>'
+           f'<div class="s">{esc(org or "No brand set")}</div>'
            f'</div></div>')
 
 
@@ -442,41 +446,40 @@ def search_results(query):
 # ==========================================================================
 # STEP 1-2 — upload, review mapping, validate
 # ==========================================================================
+def baseline_note(market):
+    """Say which months this market already has without anybody uploading them."""
+    info = next((b for b in baseline.summary() if b["market"] == market), None)
+    if not info:
+        return
+    first = f"{MONTHS[info['first'][1] - 1]} {info['first'][0]}"
+    last = f"{MONTHS[info['last'][1] - 1]} {info['last'][0]}"
+    md(f'<div class="qrs-info">📚 <b>{esc(first)} – {esc(last)} is already here.</b> '
+       f'{info["months"]} month(s) for {esc(market)} come from the report that was '
+       'issued for them, built into the app — there is no workbook to upload for those '
+       'months. Add a sheet for any later month and the whole period reports together. '
+       'Uploading a workbook for one of these months replaces the deck figures with '
+       'the fuller detail.</div>')
+
+
 def upload_cards(market):
     db = st.session_state.db
     ep = st.session_state.upload_epoch
-    c1, c2 = st.columns(2)
 
-    with c1:
-        with st.container(border=True):
-            md('<div style="font-weight:800;font-size:.95rem">📄 Audit sheet '
-               f'<span style="color:{T.hx(T.BRAND)};font-weight:700">(required)</span></div>'
-               '<div style="color:' + T.hx(T.TEXT_MUTED) + ';font-size:.78rem;margin:4px 0 10px">'
-               'The monthly QA audit log. Gives full detail, so every filter and every '
-               'chart works. .xlsx, .xlsm, .xls or .csv.</div>')
-            files = st.file_uploader("Audit file(s)", type=["xlsx", "xlsm", "xls", "csv"],
-                                     accept_multiple_files=True,
-                                     key=f"xl_{market}_{ep}",
-                                     label_visibility="collapsed")
-            if st.button("Read file(s)", key=f"bxl_{market}", disabled=not files,
-                         type="primary", **WIDE_BTN):
-                _stage_excel(market, files)
-                st.rerun()
-
-    with c2:
-        with st.container(border=True):
-            md('<div style="font-weight:800;font-size:.95rem">📊 Existing PowerPoint report '
-               f'<span style="color:{T.hx(T.TEXT_MUTED)};font-weight:600">(optional)</span></div>'
-               '<div style="color:' + T.hx(T.TEXT_MUTED) + ';font-size:.78rem;margin:4px 0 10px">'
-               'A deck you already issued. Recovers the monthly totals so earlier months '
-               'appear without re-keying.</div>')
-            ppts = st.file_uploader("PPTX file(s)", type=["pptx"],
-                                    accept_multiple_files=True,
-                                    key=f"pp_{market}_{ep}",
-                                    label_visibility="collapsed")
-            if st.button("Import PowerPoint", key=f"bpp_{market}", disabled=not ppts,
-                         **WIDE_BTN):
-                _import_ppt(market, ppts)
+    baseline_note(market)
+    with st.container(border=True):
+        md('<div style="font-weight:800;font-size:.95rem">📄 Audit sheet</div>'
+           '<div style="color:' + T.hx(T.TEXT_MUTED) + ';font-size:.78rem;margin:4px 0 10px">'
+           'The monthly QA audit log — the only file the app needs. It gives task-level '
+           'detail, so every filter and every chart works. .xlsx, .xlsm, .xls or .csv, '
+           'and several months at once is fine.</div>')
+        files = st.file_uploader("Audit file(s)", type=["xlsx", "xlsm", "xls", "csv"],
+                                 accept_multiple_files=True,
+                                 key=f"xl_{market}_{ep}",
+                                 label_visibility="collapsed")
+        if st.button("Read file(s)", key=f"bxl_{market}", disabled=not files,
+                     type="primary", **WIDE_BTN):
+            _stage_excel(market, files)
+            st.rerun()
 
     if has_data(db, market):
         md('<div class="qrs-ok">✅ <b>' + esc(market) + '</b> already has data loaded. '
@@ -614,6 +617,20 @@ def _review_and_confirm(market, pend):
         st.rerun()
 
 
+def all_raw_names(db):
+    """Every spelling of every developer, from task rows and issued reports alike."""
+    names = set()
+    for m in store.MARKETS:
+        for r in db["tasks"].get(m, []):
+            if r.get("dev_raw"):
+                names.add(r["dev_raw"])
+        for b in db["monthly"].get(m, []):
+            for d in b.get("developers", []):
+                if d.get("raw"):
+                    names.add(d["raw"])
+    return names
+
+
 def _apply_auto_merge():
     """
     Fold obvious name variants together across every market, automatically.
@@ -624,16 +641,7 @@ def _apply_auto_merge():
     returned instead, and surfaced as a warning rather than silently decided.
     """
     db, s = st.session_state.db, st.session_state.settings
-    names = set()
-    for m in store.MARKETS:
-        for r in db["tasks"].get(m, []):
-            if r.get("dev_raw"):
-                names.add(r["dev_raw"])
-        for b in db["monthly"].get(m, []):
-            for d in b.get("developers", []):
-                if d.get("raw"):
-                    names.add(d["raw"])
-    merged, ambiguous = nz.auto_merge_map(names, s.get("dev_aliases"))
+    merged, ambiguous = nz.auto_merge_map(all_raw_names(db), s.get("dev_aliases"))
     s["dev_aliases"] = merged
     st.session_state.reports.clear()
     return merged, ambiguous
@@ -646,35 +654,6 @@ def _month_choices(det, periods):
             seen.add(cand)
             out.append(cand)
     return out[:8]
-
-
-def _import_ppt(market, files):
-    db = st.session_state.db
-    imported = 0
-    for f in files:
-        try:
-            blocks, rep = ingest.read_pptx(f, market, filename=f.name)
-        except ingest.IngestError as exc:
-            st.error(f"**{f.name}** — {exc}")
-            continue
-        except Exception as exc:                              # noqa: BLE001
-            st.error(f"**{f.name}** — this presentation could not be read. "
-                     f"({type(exc).__name__})")
-            continue
-        store.add_monthly(db, market, blocks, f.name)
-        imported += 1
-        st.success(f"**{f.name}** — recovered {len(blocks)} month(s): "
-                   f"{', '.join(rep['months'])}.")
-        if any(b.get("observation_convention") == "overlay" for b in blocks):
-            st.info(f"**{f.name}** — this deck counted observations inside its No Error "
-                    "figure. They have been separated out so the totals match what the "
-                    "deck published, under the current rule.")
-    if imported:
-        _apply_auto_merge()
-        persist()
-        st.session_state.reports.pop(market, None)
-        st.session_state.cfg.pop(market, None)
-        st.rerun()
 
 
 # ==========================================================================
@@ -787,14 +766,15 @@ def configure_form(market):
                                   default=keep(cfg["developers"], fac["developers"]),
                                   key=f"d_{market}_{ep}")
 
-        with st.expander("More filters — category, severity, environment, week, day, QA analyst"):
+        with st.expander("More filters — category, severity, link type, week, day, QA analyst"):
             f1, f2, f3 = st.columns(3)
             with f1:
                 cats = st.multiselect("Defect category", fac["categories"],
                                       default=keep(cfg["categories"], fac["categories"]),
                                       key=f"c_{market}_{ep}")
-                envs = st.multiselect("Environment", fac["environments"],
+                envs = st.multiselect("Link type", fac["environments"],
                                       default=keep(cfg["environments"], fac["environments"]),
+                                      format_func=nz.env_label,
                                       key=f"e_{market}_{ep}")
             with f2:
                 sevs = st.multiselect("Severity", fac["severities"],
@@ -955,9 +935,9 @@ def render_dashboard(sel, tot=None):
          f"{tot['no_error']} no error + {tot['observations']} observation", "✅"),
         (f"{tot['observations']:,}", "Observations", T.TEAL, "inside error free", "📝"),
         (f"{tot['error_tasks']:,}", "Total defects", T.RED, None, "🐞"),
-        (f"{tot['internal']:,}", "Internal defects", T.ORANGE,
+        (f"{tot['internal']:,}", "Test link defects", T.ORANGE,
          f"{tot['internal_pct']:.2f}% of defects", "🛡️"),
-        (f"{tot['external']:,}", "External defects", T.PURPLE,
+        (f"{tot['external']:,}", "Live link defects", T.PURPLE,
          f"{tot['external_pct']:.2f}% of defects", "🌐"),
         (f"{tot['developers']}", "Developers audited", T.BRAND, None, "👥"),
         (FS(tot["score"]), "Overall quality score", T.score_color(tot["score"]),
@@ -966,7 +946,6 @@ def render_dashboard(sel, tot=None):
 
     cats = metrics.category_table(sel)
     art = _dash_charts(rows, cats, tot["error_tasks"],
-                       float(sel.settings.get("target_score", 95)),
                        (tot["total_tasks"], tot["error_tasks"], tot["no_error"],
                         tot["observations"]))
 
@@ -1018,10 +997,24 @@ def render_dashboard(sel, tot=None):
         else:
             st.caption("No developer data in this selection.")
 
-    bar("Task composition")
-    st.image(art["comp"], **WIDE_IMG)
-    st.caption("Observations sit **inside** the error-free segment. They are never added "
-               "on top of it — that would double-count the same tasks.")
+    bar("Task composition", "How the audited tasks divide")
+    k1, k2 = st.columns([1.0, 1.4])
+    with k1:
+        st.image(art["comp"], **WIDE_IMG)
+    with k2:
+        md(f'<div style="font-weight:700;font-size:.92rem;margin-top:6px">'
+           f'Reading this chart</div>'
+           f'<div style="color:{T.hx(T.TEXT_MUTED)};font-size:.84rem;line-height:1.6;'
+           f'margin-top:6px">'
+           f'<b>{tot["error_free"]:,}</b> of <b>{tot["total_tasks"]:,}</b> tasks were '
+           f'error free. <b>{tot["observations"]:,}</b> of those carried an observation '
+           '— counted <b>inside</b> the error-free slices, never added on top of them. '
+           'Adding them again would double-count the same tasks.</div>'
+           f'<div style="color:{T.hx(T.TEXT_MUTED)};font-size:.84rem;line-height:1.6;'
+           f'margin-top:10px"><b>{tot["error_tasks"]:,}</b> task(s) contained a defect.'
+           '</div>'
+           f'<div style="color:{T.hx(T.TEXT_MUTED)};font-size:.78rem;margin-top:12px;'
+           f'font-style:italic">{esc(RULE_NOTE)}</div>')
 
     ins = metrics.insights(sel)
     if ins:
@@ -1059,10 +1052,23 @@ def render_dashboard(sel, tot=None):
                        "Source": "Excel detail" if r["source"] == "detail" else "Imported deck"}
                       for r in rows], hide_index=True, **WIDE_DF)
         st.markdown("**Developers**")
-        st.dataframe([{"Developer": d["name"], "Total": d["total"], "Error": d["error"],
-                       "No error": d["no_error"], "Observation": d["observation"],
-                       "Error free": d["error_free"], "Quality score": FS(d["score"])}
-                      for d in metrics.developer_table(sel)], hide_index=True, **WIDE_DF)
+        devs = metrics.developer_table(sel)
+        dev_rows = [{"Developer": d["name"], "Error": d["error"],
+                     "No error": d["no_error"], "Observation": d["observation"],
+                     "Error free": d["error_free"], "Total": d["total"],
+                     "Quality score": FS(d["score"])} for d in devs]
+        if devs:
+            # The column sums, on the same table rather than left to the reader.
+            agg = {k: sum(d[k] for d in devs)
+                   for k in ("error", "no_error", "observation", "error_free", "total")}
+            dev_rows.append({
+                "Developer": "Total", "Error": agg["error"], "No error": agg["no_error"],
+                "Observation": agg["observation"], "Error free": agg["error_free"],
+                "Total": agg["total"],
+                "Quality score": FS(metrics.compute(agg["error"], agg["no_error"],
+                                                    agg["observation"])["score"])})
+        st.dataframe(dev_rows, hide_index=True, **WIDE_DF)
+        st.caption(RULE_NOTE)
 
 
 def bump_data(market=None):
@@ -1162,7 +1168,6 @@ def page_home():
 
     cats = metrics.category_table(sel)
     art = _dash_charts(metrics.monthly_series(sel), cats, tot["error_tasks"],
-                       float(s.get("target_score", 95)),
                        (tot["total_tasks"], tot["error_tasks"], tot["no_error"],
                         tot["observations"]))
     c1, c2 = st.columns([1.5, 1.0])
@@ -1267,6 +1272,10 @@ def page_upload(prog_slot):
                    "now use this selection.")
 
     cfg = get_cfg(market)
+    if tot["months"] == 1 and cfg["include_monthly"]:
+        md('<div class="qrs-info">ℹ️ <b>One month selected.</b> The consolidated section '
+           'is left out — consolidating a single month restates its own pages line for '
+           'line. The report will carry the monthly pages and the closing dashboard.</div>')
     bar("Review the metrics", "The same numbers the report will carry")
     kpi_row([
         (f"{tot['total_tasks']:,}", "Total tasks audited", T.BLUE, None, "📋"),
@@ -1281,7 +1290,7 @@ def page_upload(prog_slot):
 
     if gen:
         opts = {"market_label": cfg["label"] or market,
-                "org": st.session_state.settings.get("org_name", "BMW"),
+                "org": st.session_state.settings.get("org_name", ""),
                 "prepared_by": st.session_state.settings.get("prepared_by", ""),
                 "notes": cfg["note"]}
         for k in ("include_monthly", "include_summary", "include_developer",
@@ -1323,11 +1332,19 @@ def page_results():
     badge = pill("Report generated", T.GREEN) if ready else pill("Preview", T.ORANGE)
     h1, h2 = st.columns([3, 1.5])
     with h1:
+        org = (st.session_state.settings.get("org_name") or "").strip()
+        detail_months = len({(r["year"], r["month"]) for r in sel.tasks})
+        if sel.tasks and detail_months == tot["months"]:
+            source = f"{len(sel.tasks):,} task rows"
+        elif sel.tasks:
+            source = (f"{len(sel.tasks):,} task rows · "
+                      f"{tot['months'] - detail_months} month(s) from an issued report")
+        else:
+            source = f"{tot['months']} month(s) from an issued report"
         md(f'<div class="qrs-crumb">Results &nbsp;/&nbsp; <b>{esc(market)}</b></div>'
            f'<div class="qrs-page-title">{esc(label)} QA summary report &nbsp;{badge}</div>'
-           f'<div class="qrs-page-sub">{esc(tot["period_label"])} · '
-           f'{len(sel.tasks):,} task rows · prepared for '
-           f'{esc(st.session_state.settings.get("org_name") or "—")}</div>')
+           f'<div class="qrs-page-sub">{esc(tot["period_label"])} · {esc(source)}'
+           + (f' · prepared for {esc(org)}' if org else "") + '</div>')
     with h2:
         if st.button("⚙️  Change filters", key="res_cfg", **WIDE_BTN):
             go("upload")
@@ -1449,16 +1466,16 @@ def page_data():
 
 def _dm_names():
     db, s = st.session_state.db, st.session_state.settings
-    st.caption("Audit sheets spell the same person several ways. Nothing is merged "
-               "automatically — two people can genuinely share a first name, so "
-               "ambiguity is flagged for you to decide.")
+    st.caption("Audit sheets and issued reports spell the same person several ways. "
+               "Clear variants are folded together; anything a human would have to "
+               "guess at is flagged for you to decide, because two people can "
+               "genuinely share a first name.")
 
-    all_raw = sorted({r.get("dev_raw") for m in store.MARKETS
-                      for r in db["tasks"].get(m, []) if r.get("dev_raw")})
+    all_raw = sorted(all_raw_names(db))
     aliases = dict(s.get("dev_aliases") or {})
 
     if not all_raw:
-        md('<div class="qrs-info">ℹ️ No task-level data loaded yet.</div>')
+        md('<div class="qrs-info">ℹ️ No developer data loaded yet.</div>')
         return
 
     lookup = nz.build_alias_lookup(aliases)
@@ -1552,28 +1569,49 @@ def _dm_periods():
     bar("Stored periods", "Everything currently held, by market")
     rows = []
     for m in store.MARKETS:
+        built_in = baseline.periods_for(m)
         for (y, mo) in metrics.available_periods(db, m):
             n_t = sum(1 for r in db["tasks"].get(m, []) if r["year"] == y and r["month"] == mo)
+            if n_t:
+                src = "Excel detail"
+            elif (y, mo) in built_in:
+                src = "Built-in report"
+            else:
+                src = "Imported deck"
             rows.append({"Market": m, "Period": f"{MONTHS[mo - 1]} {y}", "Task rows": n_t,
-                         "Source": "Excel detail" if n_t else "Imported deck",
-                         "_k": (m, y, mo)})
+                         "Source": src, "_k": (m, y, mo)})
     if not rows:
         md('<div class="qrs-info">ℹ️ Nothing stored yet.</div>')
         return
     st.dataframe([{k: v for k, v in r.items() if k != "_k"} for r in rows],
                  hide_index=True, **WIDE_DF)
+
+    # A built-in month is part of the application, not data somebody loaded, so
+    # it is not offered for deletion — it would simply reappear on the next run.
+    deletable = [r for r in rows if r["Source"] != "Built-in report"]
+    n_builtin = len(rows) - len(deletable)
+    if not deletable:
+        md('<div class="qrs-info">ℹ️ Every stored period here is a built-in report that '
+           'ships with the app. Upload a workbook for one of these months to replace its '
+           'figures with task-level detail.</div>')
+        return
     d1, d2 = st.columns([3, 1])
     pick = d1.selectbox("Delete a period",
-                        [f"{r['Market']} — {r['Period']}" for r in rows], key="dm_del_pick")
+                        [f"{r['Market']} — {r['Period']}" for r in deletable],
+                        key="dm_del_pick")
     if d2.button("Delete", key="dm_del", **WIDE_BTN):
-        key = next(r["_k"] for r in rows if f"{r['Market']} — {r['Period']}" == pick)
+        key = next(r["_k"] for r in deletable if f"{r['Market']} — {r['Period']}" == pick)
         store.backup_db("before_delete")
         n = store.delete_period(db, *key)
         persist()
         bump_data()
         flash("success", f"Removed {n} record(s) for {pick}.")
         st.rerun()
-    st.caption("A backup is written before anything is deleted.")
+    cap = "A backup is written before anything is deleted."
+    if n_builtin:
+        cap += (f" {n_builtin} built-in month(s) are not listed above — they ship with "
+                "the app, so deleting one would only bring it back on the next run.")
+    st.caption(cap)
 
 
 def _dm_history():
@@ -1626,8 +1664,10 @@ def _dm_maintenance():
                 n = store.clear_market(db, wipe)
                 persist()
                 bump_data(wipe)
+                extra = (" The built-in report months for this market are part of the "
+                         "app and stay available.") if wipe in baseline.markets() else ""
                 flash("success", f"Cleared {n} record(s) from {wipe}. "
-                                 "A backup was saved first.")
+                                 f"A backup was saved first.{extra}")
                 st.rerun()
 
     bar("Restore a database", "Replaces everything currently stored")
@@ -1660,34 +1700,33 @@ def _dm_maintenance():
 # ==========================================================================
 def page_settings():
     s, db = st.session_state.settings, st.session_state.db
-    page_header("Settings", "Branding, benchmarks, appearance and stored data.")
+    page_header("Settings", "Branding, appearance and stored data.")
 
     with st.form("settings_form"):
         c1, c2 = st.columns(2)
         with c1:
             bar("Organisation / brand")
-            org = st.text_input("Brand name", s.get("org_name", "BMW"))
+            org = st.text_input("Brand name", s.get("org_name", ""),
+                                placeholder="e.g. your client or organisation")
             prep = st.text_input("Prepared by", s.get("prepared_by", ""),
                                  placeholder="Your name (optional)")
             st.caption("Both appear on the cover of every generated PPTX and PDF.")
         with c2:
-            bar("Score benchmarks")
-            target = st.number_input("Target score (%)", 50.0, 100.0,
-                                     float(s.get("target_score", 95.0)), 0.5)
-            watch = st.number_input("Watch benchmark (%)", 50.0, 100.0,
-                                    float(s.get("watch_score", 90.0)), 0.5)
-            st.caption("A score at or above the target is green, above the watch "
-                       "benchmark amber, and below it red — everywhere in the product.")
+            bar("How a score is read")
+            md(f'<div style="color:{T.hx(T.TEXT_MUTED)};font-size:.84rem;line-height:1.7">'
+               f'{pill(f"{metrics.BAND_GOOD:.0f}% and above", T.GREEN)} on track &nbsp; '
+               f'{pill(f"{metrics.BAND_WATCH:.0f}–{metrics.BAND_GOOD:.0f}%", T.ORANGE)} '
+               'watch &nbsp; '
+               f'{pill(f"below {metrics.BAND_WATCH:.0f}%", T.RED)} needs attention</div>')
+            st.caption("These bands only colour a score on screen and in the report. "
+                       "There is no target to set: the report states what the quality "
+                       "was, and moving the goalposts is not the report's job.")
         st.markdown("")
         sc1, _sc2 = st.columns([1, 3])
         saved = sc1.form_submit_button("💾   Save changes", type="primary", **WIDE_BTN)
 
-    if watch > target:
-        md('<div class="qrs-note">⚠️ The watch benchmark sits above the target — '
-           'check these values.</div>')
     if saved:
         s["org_name"], s["prepared_by"] = org, prep
-        s["target_score"], s["watch_score"] = float(target), float(watch)
         store.save_settings(s)
         refresh_forms()
         flash("success", "Settings saved.")
@@ -1729,7 +1768,8 @@ def page_settings():
                 st.rerun()
         else:
             md('<div class="qrs-note">⚠️ This removes all task rows and imported months '
-               'from all three markets. Import history is preserved.</div>')
+               'from all three markets. Import history is preserved, and the built-in '
+               'report months stay available.</div>')
             c1, c2, _ = st.columns([1, 1, 2])
             if c1.button("Yes, clear everything", type="primary", key="set_clear_yes",
                          **WIDE_BTN):
@@ -1742,7 +1782,9 @@ def page_settings():
                 bump_data()
                 flash("success", f"Cleared {n} record(s) from all markets. "
                                  "A backup was saved to data/backups and the import "
-                                 "history was kept.")
+                                 "history was kept. The built-in report months for "
+                                 + ", ".join(baseline.markets())
+                                 + " are part of the app and stay available.")
                 st.rerun()
             if c2.button("Cancel", key="set_clear_no", **WIDE_BTN):
                 st.session_state.confirm_clear = False
@@ -1807,13 +1849,40 @@ keeps exactly the totals it was published with instead of gaining phantom tasks.
 | `First Time Correct`, `FTC`, `Pass` | No Error |
 | `Error`, `Fail`, `Defect` | Error |
 | `Observation`, `Obs` | Observation |
-| `Test` | Internal — caught before release |
-| `Live`, `live` | External |
+| `Test` | Test link — found before the page went live |
+| `Live`, `live` | Live link — found after it went live |
 | `Design layout Related` / `Design Related` | Design Related |
 | `Redirected link` / `Redirect Links Related` | Redirect Links |
 
 Developer name variants are **flagged, not merged** — two people can share a
 first name, so the decision is yours on the Data Manager page.
+""")
+
+    bar("Test links and live links")
+    st.markdown("""
+Every defect in a report was found by QA. The split only records **where**:
+
+- **Test link** — found while the page was still on test, before it went live.
+- **Live link** — found after the page went live. Still caught by QA, not
+  reported by the client.
+
+Neither is an "external" defect in the sense of something that escaped to a
+customer, and nothing in the app calls it that. Both counts are reproduced
+exactly as the audit sheet or the issued deck recorded them.
+""")
+
+    bar("Months that came from an issued report")
+    st.markdown("""
+Some months were reported in PowerPoint before this tool existed, and the audit
+workbooks behind them no longer exist. Those decks ship **inside the app**: the
+figures are read straight out of them, so a year-to-date report works from the
+first run and an uploaded workbook only has to cover the months that follow.
+
+They show as **Built-in report** on the Data Manager page. They cannot be
+deleted — they are part of the application, not data anyone loaded, so a delete
+would only undo itself on the next run. Uploading a workbook for one of those
+months *does* replace it: task-level detail always wins over a month recovered
+from a deck.
 """)
 
     bar("Finding your way around")
@@ -1825,11 +1894,15 @@ first name, so the decision is yours on the Data Manager page.
 | **Results & Insights** | The full dashboard, plus the PPTX, PDF and CSV downloads. |
 | **Data Manager** | Developer name merging, stored periods, import history, backups. |
 | **Compare** | Two or more markets side by side over the same years. |
-| **Settings** | Brand, benchmarks, appearance and resetting the data. |
+| **Settings** | Brand, appearance and resetting the data. |
 
 The **market** and **period** pickers in the top bar apply everywhere. Setting
 the period to a single month narrows the dashboard *and* the report that is
 generated from it, so what you see is always what you download.
+
+A report for a **single month** leaves out the consolidated section: with one
+month in scope, consolidating it restates its own pages line for line. You get
+the monthly pages and the closing dashboard.
 """)
 
     bar("Working offline")
@@ -1855,7 +1928,6 @@ def main():
     if any(st.session_state.reports.get(m) for m in store.MARKETS):
         progress_bar(prog_slot, 100, "REPORT GENERATED", done=True)
 
-    storage_notice()
     drain_flash()
 
     if query:

@@ -1,8 +1,17 @@
 # QA Report Studio
 
 Turns your monthly QA audit sheets into a branded PowerPoint and PDF quality
-report for **BMW India, C3 and Japan** — completely offline, with no API keys,
-no accounts, no usage limits and no external database.
+report across three markets — **India, C3 and Japan** — completely offline, with
+no API keys, no accounts, no usage limits and no external database.
+
+The brand on the cover is whatever you type on the Settings page; nothing in the
+app is tied to one client.
+
+**January–June 2026 for C3 and Japan is already in the app.** Those months were
+issued as PowerPoint before this tool existed and the audit workbooks behind them
+no longer exist, so the decks themselves ship inside the app and are read
+straight into the database. Upload a workbook for any later month and the whole
+period reports together.
 
 ---
 
@@ -123,7 +132,7 @@ Your data lives in two plain JSON files inside the `data` folder:
 
 ```
 data/database.json    every task row and every imported month
-data/settings.json    benchmarks, name merges, report defaults
+data/settings.json    brand, prepared-by, name merges
 data/backups/         automatic snapshots taken before anything destructive
 ```
 
@@ -142,7 +151,7 @@ no `.env` file. If you were expecting to configure API keys, database URLs or
 service endpoints — there are none, because the app calls nothing external.
 
 Everything that would normally be an environment variable is either on the
-**Settings** page of the app (organisation name, prepared-by, score benchmarks)
+**Settings** page of the app (organisation name, prepared-by)
 or in `.streamlit/config.toml` (theme, upload limit and server settings).
 
 The only variables that have any effect are Streamlit's own optional ones, which
@@ -180,7 +189,7 @@ another instead of every market owning its own copy of the whole workflow.
 | **Results & Insights** | The full dashboard, and the PPTX / PDF / CSV downloads. |
 | **Data Manager** | Developer name merging, stored periods, import history, backups and restore. |
 | **Compare** | Two or three markets side by side over the same years. |
-| **Settings** | Brand, prepared-by, score benchmarks, appearance and resetting the data. |
+| **Settings** | Brand, prepared-by, appearance and resetting the data. |
 | **Help** | The calculation rules, in the app itself. |
 
 The search box in the top bar looks across developer names, defect titles,
@@ -189,17 +198,17 @@ never changes a filter or a stored figure.
 
 ### Step 1 — Upload data
 
-On **Upload & Configure** you can add two different things:
-
-- **Audit sheet** (`.xlsx`, `.xlsm`, `.xls`, `.csv`) — the monthly QA audit log.
-  This is the important one: it gives task-level detail, so every filter and
-  every chart works. You can upload several months at once.
-- **Existing PowerPoint report** (`.pptx`) — *optional.* A deck you already
-  issued. The app recovers the monthly totals from it, so months you reported
-  before this tool existed still appear in a full-year report without you
-  re-keying anything.
+**Upload & Configure** asks for one file: the **audit sheet** (`.xlsx`, `.xlsm`,
+`.xls`, `.csv`) — the monthly QA audit log. It gives task-level detail, so every
+filter and every chart works. Several months at once is fine.
 
 Press **Read file(s)**. Nothing is saved yet.
+
+There is no separate deck upload. The months that only ever existed as a
+PowerPoint report — January to June 2026 for C3 and Japan — are built into the
+app and are already there before you upload anything. A workbook for one of
+those months *replaces* the deck figures for it, because task-level detail is
+richer than a recovered summary.
 
 ### Step 2 — Review and validate
 
@@ -255,6 +264,36 @@ KPI tiles, the monthly trend, the defect-category donut, the top performers, the
 task-composition bar, key insights, recommendations, and the monthly and
 developer tables.
 
+### Score bands, and why there is no target
+
+A score at or above **95%** is green, **90–95%** amber, and below **90%** red.
+Those bands only colour a number; they are not a goal anyone sets, and there is
+deliberately nothing in Settings to change them. The report states what the
+quality was — moving the goalposts is not the report's job.
+
+### Test links and live links
+
+Every defect in a report was found by QA. The split only records **where**:
+
+- **Test link** — found while the page was still on test, before it went live.
+- **Live link** — found after the page went live. Still caught by QA, not
+  reported by the client.
+
+Neither is an "external" defect in the sense of something a customer reported,
+and nothing in the app calls it that. Both counts are reproduced exactly as the
+audit sheet or the issued deck recorded them.
+
+### One month selected
+
+A report for a **single month** leaves out the consolidated section. With one
+month in scope, consolidating it restates its own pages line for line — the QA
+summary, the developer summary and the category breakdown would each repeat a
+page you had already read. You get the monthly pages and the closing dashboard.
+
+Select two or more months and the consolidated section comes back. (If you
+switch the monthly section off and select one month, the consolidated view is
+the whole report, so it is kept.)
+
 ### Appearance
 
 The theme is set once, in `.streamlit/config.toml`, and covers everything: the
@@ -292,7 +331,7 @@ did. The reset itself is logged in that history too.
    | Monthly section | Per month: a **month divider** naming the month and year, then Quality Score, Developer Report, and Defect Analysis |
    | QA summary | Every KPI in one table, plus the month-by-month trend |
    | Developer summary | One full-width per-developer table |
-   | Defect categories | Category breakdown and internal vs external |
+   | Defect categories | Category breakdown, and the test-link / live-link split |
    | Aging analysis | *(off by default)* Defect age distribution |
    | Critical defects | *(off by default)* Defects logged at Critical severity |
    | Recommendations | Actions derived from the numbers |
@@ -369,8 +408,8 @@ does this.
 | `First Time Correct`, `FTC`, `Pass`, `Correct` | No Error |
 | `Error`, `Fail`, `Defect` | Error |
 | `Observation`, `Obs` | Observation |
-| `Test` (Test Environment) | Internal — caught before release |
-| `Live`, `live`, `LIVE` | External |
+| `Test` (Test Environment) | Test link — found before the page went live |
+| `Live`, `live`, `LIVE` | Live link — found after it went live |
 | `Design layout Related` / `Design Related` | Design Related |
 | `Redirected link` / `Redirect Links Related` | Redirect Links |
 
@@ -413,8 +452,9 @@ python tests_ui.py     # the interface
 
 **`tests.py`** covers the calculation engine, ingestion, filtering, legacy deck
 conversion, name merging, error handling, hosted storage and output
-consistency. 83 checks run on their own; more when the optional sample
-workbooks referenced at the top of the file are present.
+consistency, the built-in reports, the no-target rule and slide geometry.
+140 checks run on their own; more when the optional sample workbooks referenced
+at the top of the file are present.
 
 **`tests_ui.py`** boots the real `app.py` through Streamlit's own AppTest
 harness and clicks the real widgets: every page renders, every nav item
@@ -422,13 +462,13 @@ switches, the market and period pickers work, a file is staged, reviewed,
 validated and imported, every filter and section switch is present, a report
 generates, and the deck it produces carries the same figures the screen showed.
 It also exercises the destructive paths — delete a period, clear a market,
-clear everything — and checks each empty state explains itself. 160 checks.
+clear everything — and checks each empty state explains itself. 188 checks.
 
 Both end with their own count:
 
 ```
-  83 passed, 0 failed
-  160 passed, 0 failed
+  140 passed, 0 failed
+  188 passed, 0 failed
 ```
 
 ---
@@ -638,6 +678,8 @@ QA_Report_Studio/
 ├── .streamlit/config.toml  Theme and server settings
 ├── data/                   Your JSON database (created on first run)
 └── qars/
+    ├── baseline.py         Reads the decks that ship with the app
+    ├── baseline/           Those decks (C3 and Japan, Jan-Jun 2026)
     ├── theme.py            Design system — palette, tokens and the app stylesheet
     ├── store.py            Atomic JSON persistence
     ├── normalize.py        Name, status, category and severity cleaning
