@@ -35,8 +35,8 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from qars import (baseline, charts, deck, ingest, metrics, normalize as nz, pdf,  # noqa: E402
-                  store, theme as T)
+from qars import (charts, deck, ingest, library, metrics, normalize as nz,  # noqa: E402
+                  pdf, publish, store, theme as T)
 
 
 # --------------------------------------------------------------------------
@@ -133,15 +133,40 @@ def boot():
     # than holding a year or a developer that has just been deleted.
     st.session_state.setdefault("cfg_epoch", 0)
 
-    # Reports issued before this tool existed ship with it. Re-seeded on every
-    # run rather than once, so clearing the data or restoring an older export
-    # cannot leave a market with a hole in its published history.
-    if baseline.seed(st.session_state.db):
-        # Those decks bring a roster of their own. Without the same name-folding
-        # an upload triggers, one person spelled two ways is counted twice and
-        # the market reports more developers than its own deck published.
+    publish_config()
+
+    # Every month the app has ever been given — the reports that shipped with
+    # it and every workbook imported since — lives in the report library and is
+    # loaded here. Re-seeded on every run rather than once, so clearing the
+    # working data or restoring an older export cannot leave a market with a
+    # hole in its history, and so a month one person uploads is there for the
+    # next person to open the app.
+    if library.seed(st.session_state.db):
+        # The library brings a roster this session has never seen. Without the
+        # same name-folding an upload triggers, one person spelled two ways is
+        # counted twice and the market reports more developers than its own
+        # report published.
         _apply_auto_merge()
         persist()
+
+
+def publish_config():
+    """
+    Point the publisher at the repository, from Streamlit's secrets.
+
+    Kept here because this is the only layer that knows about Streamlit;
+    `qars.publish` takes plain values so the tests can drive it directly.
+    Reading secrets throws when no secrets file exists, which is the normal
+    case on a laptop, so it is not an error — publishing simply stays off.
+    """
+    cfg = {}
+    try:
+        section = st.secrets.get("github", {})
+        cfg = {"token": section.get("token"), "repo": section.get("repo"),
+               "branch": section.get("branch")}
+    except Exception:                                         # noqa: BLE001
+        cfg = {}
+    return publish.configure(**cfg)
 
 
 def dark_theme():
@@ -446,26 +471,33 @@ def search_results(query):
 # ==========================================================================
 # STEP 1-2 — upload, review mapping, validate
 # ==========================================================================
-def baseline_note(market):
-    """Say which months this market already has without anybody uploading them."""
-    info = next((b for b in baseline.summary() if b["market"] == market), None)
-    if not info:
+def period_text(ym):
+    return f"{MONTHS[ym[1] - 1]} {ym[0]}"
+
+
+def history_note(market):
+    """Say which months this market already has, so nobody re-uploads them."""
+    held = sorted(library.periods_for(market))
+    if not held:
+        md('<div class="qrs-info">📚 <b>Nothing kept for '
+           f'{esc(market)} yet.</b> The first sheet you import is kept in the report '
+           'library, and every one after it is added to the same history — so from '
+           'next month you upload one file, not all of them.</div>')
         return
-    first = f"{MONTHS[info['first'][1] - 1]} {info['first'][0]}"
-    last = f"{MONTHS[info['last'][1] - 1]} {info['last'][0]}"
-    md(f'<div class="qrs-info">📚 <b>{esc(first)} – {esc(last)} is already here.</b> '
-       f'{info["months"]} month(s) for {esc(market)} come from the report that was '
-       'issued for them, built into the app — there is no workbook to upload for those '
-       'months. Add a sheet for any later month and the whole period reports together. '
-       'Uploading a workbook for one of these months replaces the deck figures with '
-       'the fuller detail.</div>')
+    files = len([e for e in library.summary() if e["market"] == market])
+    md(f'<div class="qrs-info">📚 <b>{esc(period_text(held[0]))} – '
+       f'{esc(period_text(held[-1]))} is already here.</b> '
+       f'{len(held)} month(s) for {esc(market)} are kept in the report library, across '
+       f'{files} file(s) — there is nothing to re-upload for them. Import a sheet for '
+       'any later month and it joins the same history, so the whole period reports '
+       'together. A sheet for a month already held replaces it.</div>')
 
 
 def upload_cards(market):
     db = st.session_state.db
     ep = st.session_state.upload_epoch
 
-    baseline_note(market)
+    history_note(market)
     with st.container(border=True):
         md('<div style="font-weight:800;font-size:.95rem">📄 Audit sheet</div>'
            '<div style="color:' + T.hx(T.TEXT_MUTED) + ';font-size:.78rem;margin:4px 0 10px">'
@@ -488,12 +520,20 @@ def upload_cards(market):
 
 
 def _stage_excel(market, files):
-    """Parse now, but hold the rows until the user has reviewed step 2."""
+    """
+    Parse now, but hold the rows until the user has reviewed step 2.
+
+    The raw bytes are held alongside the parsed rows: on confirmation the file
+    itself goes into the report library, so the month can be re-read later
+    rather than surviving only as whatever this version of the parser made
+    of it.
+    """
     staged, failed = [], []
     for f in files:
         try:
-            rows, rep = ingest.read_excel(f, market, filename=f.name)
-            staged.append({"rows": rows, "report": rep, "name": f.name})
+            data = f.getvalue() if hasattr(f, "getvalue") else f.read()
+            rows, rep = ingest.read_excel(data, market, filename=f.name)
+            staged.append({"rows": rows, "report": rep, "name": f.name, "data": data})
         except ingest.IngestError as exc:
             failed.append((f.name, str(exc)))
         except Exception as exc:                              # noqa: BLE001
@@ -592,29 +632,102 @@ def _review_and_confirm(market, pend):
 
     c1, c2, _ = st.columns([1.3, 1, 2.4])
     if c1.button("✅  Confirm and import", type="primary", key=f"conf_{market}", **WIDE_BTN):
-        total = 0
+        total, kept, session_only = 0, [], []
         for i, item in enumerate(pend["staged"]):
             rows = item["rows"]
-            if i in corrections:
-                y, m = corrections[i]
+            force = corrections.get(i)
+            if force:
+                y, m = force
                 for r in rows:
                     r["year"], r["month"] = y, m
                     if r.get("date"):
                         r["date"] = f"{y:04d}-{m:02d}-{r['date'][-2:]}"
-            store.add_tasks(db, market, rows, item["name"])
             total += len(rows)
+            periods = sorted({(r["year"], r["month"]) for r in rows})
+            try:
+                entry, replaced = library.add(market, item["name"], item["data"],
+                                              force_month=force)
+                kept.append((entry, replaced))
+                store.log_import(db, market, "excel", item["name"], len(rows),
+                                 len(replaced), periods)
+            except library.LibraryError as exc:
+                # The library could not take it — a read-only checkout, say.
+                # The import still has to work, it just cannot outlive the
+                # session, and the person is told so rather than finding out
+                # after a restart.
+                session_only.append((item["name"], str(exc)))
+                store.add_tasks(db, market, rows, item["name"])
+        if kept:
+            library.resync(db)
         _apply_auto_merge()
         persist()
         st.session_state.pending.pop(market, None)
         st.session_state.reports.pop(market, None)
         st.session_state.cfg.pop(market, None)
-        flash("success", f"Imported {total} row(s) into {market}. Developer name "
-                         "variants are flagged on the Data Manager page — nothing was "
-                         "merged automatically.")
+        _announce_import(market, kept, session_only, total)
         st.rerun()
     if c2.button("Cancel", key=f"canc_{market}", **WIDE_BTN):
         st.session_state.pending.pop(market, None)
         st.rerun()
+
+
+def _announce_import(market, kept, session_only, total):
+    """
+    Say where the months went, and make them permanent where that is possible.
+
+    There are three outcomes and the difference matters, so each is stated
+    rather than rolled into one cheerful "Imported!":
+
+      * kept and published — in the repository, so it survives a restart and
+        every future visitor has it;
+      * kept in the library only — shared with everyone using this server now,
+        but a hosted server rebuilds its disk, so it needs publishing;
+      * not kept at all — this session only.
+    """
+    flash("success", f"Imported {total} row(s) into {market}. Developer name "
+                     "variants are flagged on the Data Manager page — nothing was "
+                     "merged automatically.")
+    for name, why in session_only:
+        flash("warning", f"**{name}** was imported but could not be kept: {why} "
+                         "It will be gone when this session ends.")
+    if not kept:
+        return
+
+    months = sorted({p for entry, _ in kept for p in entry["periods"]})
+    added = ", ".join(months)
+    if not publish.enabled():
+        flash("info", f"{len(kept)} file(s) added to the report library ({added}). "
+                      "Everyone using this server sees them straight away, and you "
+                      "never need to upload those months again. To keep them through "
+                      "a server restart, publish the library from **Data Manager → "
+                      "Report library**.")
+        return
+
+    ok, detail = _publish_entries(kept, market, added)
+    flash("success" if ok else "warning",
+          (f"{len(kept)} file(s) added to the report library ({added}) and committed "
+           f"to the repository — they are part of the app now. {detail}") if ok else
+          (f"{len(kept)} file(s) added to the report library ({added}), but publishing "
+           f"to GitHub failed: {detail} They are live on this server; publish again "
+           "from **Data Manager → Report library** to make them permanent."))
+
+
+def _publish_entries(kept, market, added):
+    """Commit the new library files, the index, and any file they replaced."""
+    files, stale = {}, []
+    for entry, replaced in kept:
+        _e, blob = library.file_bytes(entry["id"])
+        if blob is not None:
+            files[f"qars/library/{entry['file']}"] = blob
+        stale.extend(f"qars/library/{r['file']}" for r in replaced)
+    files["qars/library/index.json"] = library.index_bytes()
+    ok, detail = publish.push(files, f"Add {market} {added} to the report library")
+    if ok and stale:
+        gone_ok, gone_detail = publish.delete(
+            stale, f"Replace {market} {added} in the report library")
+        if not gone_ok:
+            detail += f" (the file it replaced is still in the repo: {gone_detail})"
+    return ok, detail
 
 
 def all_raw_names(db):
@@ -1095,17 +1208,9 @@ def page_home():
     db, s = st.session_state.db, st.session_state.settings
     market = st.session_state.market
 
-    who = (s.get("prepared_by") or "").strip().split(" ")[0]
-    md('<div class="qrs-hero"><div class="art">📈</div>'
-       f'<div class="eyebrow">Welcome{" back, " + esc(who) if who else " to " + esc(APP_TITLE)}</div>'
+    md('<div class="qrs-hero">'
        '<h1>Turn QA data into <span class="accent">actionable insights</span></h1>'
-       '<p>Upload your audit sheets, analyse defects, compare developers and build '
-       'better products — entirely offline, with every figure traceable back to the '
-       'row it came from.</p>'
-       '<div class="chips"><span class="chip">⚡ Automated analysis</span>'
-       '<span class="chip">📊 Visual insights</span>'
-       '<span class="chip">📤 Export to PPTX &amp; PDF</span>'
-       '<span class="chip">🔒 Nothing leaves this machine</span></div></div>')
+       '</div>')
 
     if not has_data(db, market):
         empty_state("📥", f"No data stored for {market} yet",
@@ -1452,16 +1557,154 @@ def refresh_forms():
 def page_data():
     page_header("Data Manager",
                 "Merge developer names, manage stored periods and keep backups.")
-    t1, t2, t3, t4 = st.tabs(["👥  Developer name merging", "🗓  Stored periods",
-                              "🧾  Import history", "🛠  Maintenance"])
+    t1, t2, t3, t4, t5 = st.tabs(["📚  Report library", "👥  Developer name merging",
+                                  "🗓  Stored periods", "🧾  Import history",
+                                  "🛠  Maintenance"])
     with t1:
-        _dm_names()
+        _dm_library()
     with t2:
-        _dm_periods()
+        _dm_names()
     with t3:
-        _dm_history()
+        _dm_periods()
     with t4:
+        _dm_history()
+    with t5:
         _dm_maintenance()
+
+
+def _dm_library():
+    """
+    The months the app keeps, and how permanent they actually are.
+
+    This page exists because "permanent" has three different meanings
+    depending on where the app is running, and guessing wrong costs somebody a
+    month of work. It states which one applies here, in those words.
+    """
+    db = st.session_state.db
+    rows = library.summary()
+    kept_ok = library.writable()
+    pub = publish.status()
+
+    st.caption("Every month the app knows — the reports that shipped with it and every "
+               "sheet imported since — is kept here as the file it came from, and "
+               "loaded on every start-up. This is why you only ever upload the newest "
+               "month.")
+
+    if pub["enabled"]:
+        md(f'<div class="qrs-ok">✅ <b>Imports are published.</b> New files are '
+           f'committed to <code>{esc(pub["repo"])}</code> on '
+           f'<code>{esc(pub["branch"])}</code>, so they survive a server restart and '
+           'every future visitor has them.</div>')
+    elif kept_ok:
+        md('<div class="qrs-note">⚠️ <b>Imports are kept, but not published.</b> A new '
+           'file is written into this server\'s library folder, so everyone using the '
+           'app right now sees it — but a hosted server rebuilds its disk when it '
+           'restarts, and the folder goes with it. Publish below, or set up automatic '
+           'publishing, to make months permanent.</div>')
+    else:
+        md('<div class="qrs-note">⚠️ <b>This server cannot write to its library '
+           'folder</b>, so an import lasts only for your session. Run the app where '
+           'the folder is writable, or restore a library pack below.</div>')
+
+    bar("What is kept", f"{len(rows)} file(s) · {sum(r['months'] for r in rows)} month(s)")
+    if rows:
+        table = ['<table class="qrs-table"><tr><th>Market</th><th>File</th>'
+                 '<th>Months</th><th class="num">No.</th><th>Kept</th></tr>']
+        for r in rows:
+            span = (f"{period_text(r['first'])} – {period_text(r['last'])}"
+                    if r["first"] and r["first"] != r["last"]
+                    else (period_text(r["first"]) if r["first"] else "—"))
+            kind = pill("Shipped with the app", T.BLUE) if r["shipped"] else \
+                pill("Imported", T.GREEN)
+            table.append(f'<tr><td>{esc(r["market"])}</td>'
+                         f'<td>{esc(r["source_name"])}</td><td>{esc(span)}</td>'
+                         f'<td class="num">{r["months"]}</td><td>{kind}</td></tr>')
+        md("".join(table) + "</table>")
+    else:
+        md('<div class="qrs-info">ℹ️ Nothing kept yet.</div>')
+
+    c1, c2 = st.columns(2)
+    with c1:
+        bar("Make it permanent")
+        with st.container(border=True):
+            if pub["enabled"]:
+                st.caption(f"Commits every library file to {pub['repo']}@"
+                           f"{pub['branch']}. Imports do this on their own; this is "
+                           "for a server whose folder is ahead of the repository.")
+                if st.button("⬆  Publish the whole library", type="primary",
+                             key="lib_publish", **WIDE_BTN):
+                    files = {}
+                    for r in rows:
+                        e, blob = library.file_bytes(r["id"])
+                        if blob is not None:
+                            files[f"qars/library/{e['file']}"] = blob
+                    files["qars/library/index.json"] = library.index_bytes()
+                    ok, detail = publish.push(files, "Publish the QA report library")
+                    (st.success if ok else st.error)(detail)
+            else:
+                st.caption("Automatic publishing is off. Add a GitHub token to "
+                           "`.streamlit/secrets.toml` and imports commit themselves:")
+                st.code('[github]\ntoken  = "ghp_…"      # Contents: write\n'
+                        'repo   = "owner/repository"\nbranch = "main"', language="toml")
+                st.caption("Or take the manual route: download the pack below, unzip it "
+                           "over `qars/library/` in the repository and commit. Same "
+                           "result — every future visitor gets these months.")
+            st.download_button("⬇  Download the library pack (.zip)",
+                               library.export_pack(), "qa_report_library.zip",
+                               "application/zip", key="lib_pack", **WIDE_BTN)
+    with c2:
+        bar("Restore a library pack")
+        with st.container(border=True):
+            st.caption("Unpacks a downloaded pack over this server's library. Use it "
+                       "to move history between machines.")
+            up = st.file_uploader("Library pack (.zip)", type=["zip"],
+                                  key=f"lib_restore_{st.session_state.upload_epoch}",
+                                  label_visibility="collapsed")
+            if st.button("Restore pack", disabled=up is None, key="lib_restore_go",
+                         **WIDE_BTN):
+                try:
+                    n = library.restore_pack(up.getvalue())
+                except library.LibraryError as exc:
+                    st.error(str(exc))
+                else:
+                    library.resync(db)
+                    _apply_auto_merge()
+                    persist()
+                    st.session_state.upload_epoch += 1
+                    bump_data()
+                    flash("success", f"Restored {n} file(s) into the report library.")
+                    st.rerun()
+
+    removable = [r for r in rows if not r["shipped"]]
+    if removable:
+        bar("Remove a file", "Takes every month in it out of the history")
+        r1, r2 = st.columns([3, 1])
+        labels = {f"{r['market']} — {r['source_name']} "
+                  f"({r['months']} month(s))": r for r in removable}
+        picked = r1.selectbox("File", list(labels), key="lib_rm_pick")
+        target = labels[picked]
+        r1.caption("This removes " + ", ".join(period_text(p) for p in target["periods"])
+                   + " from " + target["market"] + ".")
+        if r2.button("Remove", key="lib_rm_go", **WIDE_BTN):
+            try:
+                gone = library.remove(target["id"])
+            except library.LibraryError as exc:
+                st.error(str(exc))
+            else:
+                library.resync(db)
+                persist()
+                bump_data()
+                msg = f"Removed {gone['source_name']} from the report library."
+                if publish.enabled():
+                    ok, detail = publish.delete([f"qars/library/{gone['file']}",
+                                                 ], f"Remove {gone['source_name']}")
+                    pok, pdetail = publish.push(
+                        {"qars/library/index.json": library.index_bytes()},
+                        f"Remove {gone['source_name']} from the report library")
+                    msg += (" Removed from the repository too." if ok and pok
+                            else f" It is still in the repository: {detail or pdetail}")
+                flash("success", msg)
+                st.rerun()
 
 
 def _dm_names():
@@ -1569,31 +1812,33 @@ def _dm_periods():
     bar("Stored periods", "Everything currently held, by market")
     rows = []
     for m in store.MARKETS:
-        built_in = baseline.periods_for(m)
+        built_in = library.shipped_periods_for(m)
         for (y, mo) in metrics.available_periods(db, m):
             n_t = sum(1 for r in db["tasks"].get(m, []) if r["year"] == y and r["month"] == mo)
-            if n_t:
-                src = "Excel detail"
-            elif (y, mo) in built_in:
-                src = "Built-in report"
+            in_lib = (y, mo) in library.periods_for(m)
+            if (y, mo) in built_in:
+                src = "Shipped report"
+            elif in_lib:
+                src = "Library workbook" if n_t else "Library report"
             else:
-                src = "Imported deck"
+                src = "This session only"
             rows.append({"Market": m, "Period": f"{MONTHS[mo - 1]} {y}", "Task rows": n_t,
-                         "Source": src, "_k": (m, y, mo)})
+                         "Source": src, "_k": (m, y, mo), "_lib": in_lib})
     if not rows:
         md('<div class="qrs-info">ℹ️ Nothing stored yet.</div>')
         return
-    st.dataframe([{k: v for k, v in r.items() if k != "_k"} for r in rows],
+    st.dataframe([{k: v for k, v in r.items() if not k.startswith("_")} for r in rows],
                  hide_index=True, **WIDE_DF)
 
-    # A built-in month is part of the application, not data somebody loaded, so
-    # it is not offered for deletion — it would simply reappear on the next run.
-    deletable = [r for r in rows if r["Source"] != "Built-in report"]
-    n_builtin = len(rows) - len(deletable)
+    # A month the library owns is removed by removing its file, on the Report
+    # library tab — deleting it here would only bring it back on the next run.
+    deletable = [r for r in rows if not r["_lib"]]
+    n_library = len(rows) - len(deletable)
     if not deletable:
-        md('<div class="qrs-info">ℹ️ Every stored period here is a built-in report that '
-           'ships with the app. Upload a workbook for one of these months to replace its '
-           'figures with task-level detail.</div>')
+        md('<div class="qrs-info">ℹ️ Every stored period here is kept in the report '
+           'library, which is what makes it survive. Remove one on the '
+           '<b>Report library</b> tab, or import a sheet for the same month to '
+           'replace it.</div>')
         return
     d1, d2 = st.columns([3, 1])
     pick = d1.selectbox("Delete a period",
@@ -1608,9 +1853,10 @@ def _dm_periods():
         flash("success", f"Removed {n} record(s) for {pick}.")
         st.rerun()
     cap = "A backup is written before anything is deleted."
-    if n_builtin:
-        cap += (f" {n_builtin} built-in month(s) are not listed above — they ship with "
-                "the app, so deleting one would only bring it back on the next run.")
+    if n_library:
+        cap += (f" {n_library} month(s) held in the report library are not listed "
+                "above — remove those on the Report library tab, where the file "
+                "itself is removed too.")
     st.caption(cap)
 
 
@@ -1664,8 +1910,8 @@ def _dm_maintenance():
                 n = store.clear_market(db, wipe)
                 persist()
                 bump_data(wipe)
-                extra = (" The built-in report months for this market are part of the "
-                         "app and stay available.") if wipe in baseline.markets() else ""
+                extra = (" The report library for this market is untouched, so its "
+                         "stored months stay available.") if library.periods_for(wipe) else ""
                 flash("success", f"Cleared {n} record(s) from {wipe}. "
                                  f"A backup was saved first.{extra}")
                 st.rerun()
@@ -1782,9 +2028,8 @@ def page_settings():
                 bump_data()
                 flash("success", f"Cleared {n} record(s) from all markets. "
                                  "A backup was saved to data/backups and the import "
-                                 "history was kept. The built-in report months for "
-                                 + ", ".join(baseline.markets())
-                                 + " are part of the app and stay available.")
+                                 "history was kept. Everything in the report library "
+                                 "is untouched and reloads straight away.")
                 st.rerun()
             if c2.button("Cancel", key="set_clear_no", **WIDE_BTN):
                 st.session_state.confirm_clear = False
@@ -1871,18 +2116,55 @@ customer, and nothing in the app calls it that. Both counts are reproduced
 exactly as the audit sheet or the issued deck recorded them.
 """)
 
-    bar("Months that came from an issued report")
+    bar("The report library — why you only upload the newest month")
     st.markdown("""
-Some months were reported in PowerPoint before this tool existed, and the audit
-workbooks behind them no longer exist. Those decks ship **inside the app**: the
-figures are read straight out of them, so a year-to-date report works from the
-first run and an uploaded workbook only has to cover the months that follow.
+A report covering January to September is built from nine months of history,
+and nobody wants to upload nine files every month. So the app keeps them.
 
-They show as **Built-in report** on the Data Manager page. They cannot be
-deleted — they are part of the application, not data anyone loaded, so a delete
-would only undo itself on the next run. Uploading a workbook for one of those
-months *does* replace it: task-level detail always wins over a month recovered
-from a deck.
+Every sheet you import is written into the **report library** as the file it
+came from, next to the PowerPoint reports that were issued before this tool
+existed. Everything in that folder is loaded at start-up, so:
+
+- import July, and next month you import **only August**;
+- a month already held is **replaced** by a re-import, so a corrected sheet
+  does exactly what you expect;
+- everyone using the same server sees the same history — one person's upload
+  is everybody's.
+
+Where a month came from shows on **Data Manager → Report library**: *Shipped
+with the app* for the two decks that came with it, *Imported* for everything
+since. Removing a file there takes its months out of the history; the shipped
+decks stay, because they are part of the application.
+
+Task-level detail always wins: importing a workbook for a month that only
+existed as a deck replaces the deck's summary with the real rows.
+""")
+
+    bar("Making months permanent on a hosted server")
+    st.markdown("""
+On a laptop the library folder is simply a folder — what goes in stays in.
+
+A hosted server (Streamlit Community Cloud and the like) is different: it
+rebuilds its disk from the repository every time it restarts. An imported file
+is shared with everyone using the app *right now*, but to outlive a restart it
+has to reach the repository. Two ways:
+
+1. **Automatic.** Put a GitHub token in `.streamlit/secrets.toml` and every
+   import commits itself:
+
+   ```toml
+   [github]
+   token  = "ghp_…"          # a token with Contents: write
+   repo   = "owner/repository"
+   branch = "main"
+   ```
+
+2. **By hand.** *Data Manager → Report library → Download the library pack*,
+   unzip it over `qars/library/` in the repository, and commit.
+
+Either way the months become part of the app, and the next person to open it
+has them. The Report library tab says which of these applies, in those words,
+rather than leaving you to guess.
 """)
 
     bar("Finding your way around")
@@ -1907,9 +2189,13 @@ the monthly pages and the closing dashboard.
 
     bar("Working offline")
     st.markdown("""
-Nothing calls the internet. There is no API key, no account, no usage limit and
-no external database — everything lives in `data/database.json`, which you can
-copy, back up or hand to a colleague.
+There is no API key, no account, no usage limit and no external database.
+Reading sheets, working out every figure and building the PPTX and the PDF all
+happen on the machine the app runs on.
+
+The single exception is **publishing the library to GitHub**, and only if you
+switch it on by adding a token. With no token configured the app makes no
+network calls at all.
 """)
 
 

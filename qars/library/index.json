@@ -1,0 +1,38 @@
+{
+ "entries": [
+  {
+   "id": "C3-C3_Quality_Defect_Report_2026.pptx",
+   "market": "C3",
+   "file": "C3/C3_Quality_Defect_Report_2026.pptx",
+   "kind": "deck",
+   "shipped": true,
+   "periods": [
+    "2026-01",
+    "2026-02",
+    "2026-03",
+    "2026-04",
+    "2026-05",
+    "2026-06"
+   ],
+   "added": "2026-09-17T00:00:00",
+   "source_name": "C3_Quality_Defect_Report_2026.pptx"
+  },
+  {
+   "id": "Japan-Japan_Quality_Defect_Report_2026.pptx",
+   "market": "Japan",
+   "file": "Japan/Japan_Quality_Defect_Report_2026.pptx",
+   "kind": "deck",
+   "shipped": true,
+   "periods": [
+    "2026-01",
+    "2026-02",
+    "2026-03",
+    "2026-04",
+    "2026-05",
+    "2026-06"
+   ],
+   "added": "2026-09-17T00:00:00",
+   "source_name": "Japan_Quality_Defect_Report_2026.pptx"
+  }
+ ]
+}
