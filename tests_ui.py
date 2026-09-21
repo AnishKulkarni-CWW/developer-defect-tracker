@@ -32,11 +32,51 @@ from qars import store                                       # noqa: E402
 
 store.SESSION_MODE = True
 
-from qars import baseline, ingest, metrics, normalize as nz  # noqa: E402
+from qars import ingest, library, metrics, normalize as nz  # noqa: E402
+from qars import publish, theme as _theme                    # noqa: E402
 from streamlit.testing.v1 import AppTest                     # noqa: E402
 
 PASS, FAIL = [], []
 APP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
+
+# Confirming an import now writes the workbook into the report library. The
+# whole suite therefore runs against a throwaway copy of it: the shipped decks
+# are copied in so the app behaves exactly as it ships, and nothing a test does
+# can reach the repository.
+import shutil                                                # noqa: E402
+import tempfile                                              # noqa: E402
+
+SHIPPED_DIR = library.DIR
+SCRATCH_DIR = tempfile.mkdtemp(prefix="qars_ui_lib_")
+for _name in os.listdir(SHIPPED_DIR):
+    _src = os.path.join(SHIPPED_DIR, _name)
+    if os.path.isdir(_src):
+        shutil.copytree(_src, os.path.join(SCRATCH_DIR, _name))
+    else:
+        shutil.copy2(_src, os.path.join(SCRATCH_DIR, _name))
+library.DIR = SCRATCH_DIR
+library.INDEX = os.path.join(SCRATCH_DIR, "index.json")
+library._CACHE.clear()
+
+
+def reset_library():
+    """
+    Put the scratch library back to exactly what ships with the app.
+
+    The library is permanent by design, so an import in one section is still
+    there in the next — correct behaviour, and exactly what makes these tests
+    order-dependent unless a section that assumes a clean start says so.
+    """
+    shutil.rmtree(SCRATCH_DIR, ignore_errors=True)
+    os.makedirs(SCRATCH_DIR, exist_ok=True)
+    for name in os.listdir(SHIPPED_DIR):
+        src = os.path.join(SHIPPED_DIR, name)
+        dst = os.path.join(SCRATCH_DIR, name)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+    library._CACHE.clear()
 
 
 def check(name, condition, detail=""):
@@ -223,7 +263,8 @@ csv_text = ("Mail Title,Date,Test Environment,Developer Name,Status,Error Type,E
 parsed, report = ingest.read_excel(csv_text.encode(), "India", filename="Aug_2026_audit.csv")
 at = fresh(nav="upload")
 at.session_state["pending"] = {"India": {"staged": [{"rows": parsed, "report": report,
-                                                     "name": "Aug_2026_audit.csv"}],
+                                                     "name": "Aug_2026_audit.csv",
+                                                     "data": csv_text.encode()}],
                                          "failed": []}}
 at.run()
 ran_clean(at, "The review-and-validate step renders")
@@ -241,7 +282,8 @@ check("August 2026 is now a stored period",
 
 at2 = fresh(nav="upload")
 at2.session_state["pending"] = {"India": {"staged": [{"rows": parsed, "report": report,
-                                                      "name": "Aug_2026_audit.csv"}],
+                                                      "name": "Aug_2026_audit.csv",
+                                                      "data": csv_text.encode()}],
                                           "failed": []}}
 at2.run()
 n_before = len(at2.session_state["db"]["tasks"]["India"])
@@ -364,9 +406,11 @@ check("Every seeded market appears", all(m in page for m in ("India", "C3", "Jap
 check("Comparison insights are generated", "Comparison insights" in page)
 check("The differing-volume caveat is kept", "fewer tasks" in page)
 
-_decks = baseline.DECKS.copy()
+_saved_lib = (library.DIR, library.INDEX)
+_empty_lib = tempfile.mkdtemp(prefix="qars_empty_lib_")
 try:
-    baseline.DECKS.clear()                 # simulate an install without them
+    library.DIR, library.INDEX = _empty_lib, os.path.join(_empty_lib, "index.json")
+    library._CACHE.clear()                 # simulate an install with no history
     one = AppTest.from_file(APP, default_timeout=300)
     one.session_state["db"] = store._empty_db()
     one.session_state["db"]["tasks"]["India"] = rows(2026, 5, error=1, no_error=9)
@@ -376,7 +420,9 @@ try:
     check("One market alone explains why there is nothing to compare",
           "At least two markets are needed" in body(one))
 finally:
-    baseline.DECKS.update(_decks)
+    library.DIR, library.INDEX = _saved_lib
+    library._CACHE.clear()
+    shutil.rmtree(_empty_lib, ignore_errors=True)
 
 section("DATA MANAGER — name merging, periods, history, maintenance")
 at = fresh(nav="data")
@@ -435,6 +481,7 @@ check("Back up now is offered", has(at, "button", "dm_backup"))
 check("Restore is offered", has(at, "button", "dm_restore"))
 check("Import history is shown", "Import history" in body(at) or len(at.dataframe) >= 1)
 
+reset_library()
 section("SETTINGS — branding, benchmarks, appearance and reset")
 at = fresh(nav="settings")
 ran_clean(at, "Settings renders")
@@ -466,8 +513,14 @@ check("Cancel leaves the data alone",
       and bool(at.session_state["db"]["tasks"]["India"]))
 widget(at, "button", "set_clear").click().run()
 widget(at, "button", "set_clear_yes").click().run()
-check("Confirming clears every market",
-      all(not at.session_state["db"]["tasks"][m] for m in store.MARKETS))
+_kept = {m for m in store.MARKETS if library.periods_for(m)}
+check("Confirming clears every market the library does not hold",
+      all(not at.session_state["db"]["tasks"][m]
+          for m in store.MARKETS if m not in _kept),
+      str({m: len(at.session_state["db"]["tasks"][m]) for m in store.MARKETS}))
+check("But the kept history reloads straight away",
+      all(library.periods_for(m) <= set(metrics.available_periods(
+          at.session_state["db"], m)) for m in _kept))
 check("Import history is preserved through a full clear",
       len(at.session_state["db"]["sources"]) >= 1)
 ran_clean(at, "The app still renders after a full clear")
@@ -496,6 +549,7 @@ else:
     check("Dark palette renders every page", True)
 
 
+reset_library()
 section("NO POWERPOINT UPLOAD — the decks are built in")
 at = fresh(nav="upload")
 check("The audit-sheet uploader is still offered", has(at, "button", "bxl_India"))
@@ -506,10 +560,11 @@ check("Nothing invites a deck upload",
 check("Only one file uploader is on the page", len(at.file_uploader) == 1,
       str(len(at.file_uploader)))
 widget(at, "selectbox", "topbar_market").select("C3").run()
-check("A market with a built-in report says so", "already here" in body(at))
-check("It names where the figures came from", "issued for them" in body(at))
+check("A market with kept history says so", "already here" in body(at))
+check("It says nothing needs re-uploading", "nothing to re-upload" in body(at))
 
-section("BUILT-IN REPORTS — present from the first run")
+reset_library()
+section("REPORT LIBRARY — present from the first run")
 at = fresh(seed=False)
 db = at.session_state["db"]
 check("C3 arrives with six months", len(db["monthly"]["C3"]) == 6,
@@ -519,42 +574,40 @@ check("India arrives empty", not db["monthly"]["India"] and not db["tasks"]["Ind
 at.session_state["nav"] = "home"
 at.run()
 widget(at, "selectbox", "topbar_market").select("C3").run()
-ran_clean(at, "A built-in market renders its dashboard with no upload at all")
+ran_clean(at, "A market with kept history renders with no upload at all")
 check("The published C3 score is on screen", "93.29%" in body(at),
       "score not rendered")
 _c3 = metrics.totals(metrics.select(at.session_state["db"], "C3",
                                     at.session_state["settings"], {}))
-check("The built-in roster is folded to the count its own deck published",
+check("The library roster is folded to the count its own deck published",
       _c3["developers"] == 15, f"{_c3['developers']} developers")
-check("The built-in figures are the published ones",
+check("The library figures are the published ones",
       (_c3["total_tasks"], _c3["error_tasks"], _c3["score"]) == (641, 43, 93.29),
       f"{_c3['total_tasks']} / {_c3['error_tasks']} / {_c3['score']}")
 at.session_state["nav"] = "data"
 at.run()
-check("Built-in months are labelled in the data manager",
-      "Built-in report" in tables(at))
-check("The built-in roster is listed on the merging tab",
+check("Library months are labelled in the data manager",
+      "Shipped report" in tables(at), tables(at)[:80].replace("\n", " "))
+check("The library roster is listed on the merging tab",
       "Anish" in tables(at), tables(at)[:60].replace("\n", " "))
-check("C3's built-in names are already folded together",
+check("C3's library names are already folded together",
       at.session_state["settings"]["dev_aliases"] != {},
       str(list(at.session_state["settings"]["dev_aliases"])[:3]))
-check("A built-in month is not offered for deletion",
-      "Built-in report" not in str([o for sb in at.selectbox if sb.key == "dm_del_pick"
-                                    for o in sb.options])
-      if has(at, "selectbox", "dm_del_pick") else True)
-check("The reason it cannot be deleted is given",
-      "ships with the app" in body(at) or "bring it back on the next run" in body(at))
+check("A library month is not offered for deletion here",
+      not has(at, "selectbox", "dm_del_pick"))
+check("It points at the Report library tab instead",
+      "Report library" in body(at))
 
 # Clearing user data must not take the built-in history with it.
 at.session_state["nav"] = "settings"
 at.run()
 widget(at, "button", "set_clear").click().run()
 widget(at, "button", "set_clear_yes").click().run()
-check("Clearing everything leaves the built-in months in place",
+check("Clearing everything leaves the library in place",
       len(at.session_state["db"]["monthly"]["C3"]) == 6,
       str(len(at.session_state["db"]["monthly"]["C3"])))
-check("The clear message says the built-in months stay",
-      "part of the app" in body(at))
+check("The clear message says the library is untouched",
+      "report library" in body(at).lower())
 
 section("NO HOSTED-STORAGE BANNER")
 at = fresh()
@@ -601,6 +654,121 @@ check("The on-screen developer table carries a Total row", "Total" in grid)
 check("The rule is printed under it", "Error Free = No Error + Observation" in body(at))
 
 
+section("HERO — one line, nothing else")
+at = fresh(nav="home")
+page = body(at)
+check("The headline is there", "Turn QA data into" in page)
+check("The welcome eyebrow is gone", "WELCOME TO" not in page.upper())
+check("The blurb is gone", "Upload your audit sheets, analyse defects" not in page)
+check("The feature chips are gone",
+      "Automated analysis" not in page and "Nothing leaves this machine" not in page)
+check("The hero still renders as a hero", "qrs-hero" in page)
+
+section("SIDEBAR — the rail can be reopened after closing it")
+# The collapse/reopen cycle itself is a browser behaviour and is driven in a
+# real Chromium session; what can be guarded here is the stylesheet rule that
+# broke it, so it cannot come back.
+_css = _theme.app_css()
+check("The top bar is no longer hidden outright",
+      "header[data-testid=\"stHeader\"], [data-testid=\"stHeader\"]," not in _css)
+check("The bar is flattened instead", "pointer-events:none" in _css
+      and "height:0" in _css)
+check("The control that reopens the rail is kept and styled",
+      "stExpandSidebarButton" in _css)
+check("It outranks the sticky progress strip",
+      "z-index:1000005" in _css)
+check("Only the toolbar's own contents are hidden",
+      "stAppDeployButton" in _css and "stMainMenu" in _css)
+check("The collapse arrow is not hover-only any more",
+      "stSidebarCollapseButton" in _css)
+check("The sidebar header keeps enough height to hold it",
+      "min-height:34px" in _css)
+
+reset_library()
+section("REPORT LIBRARY — the page that explains what is kept")
+at = fresh(nav="data")
+ran_clean(at, "The Report library tab renders")
+page = body(at)
+check("It lists what is kept", "What is kept" in page)
+check("The shipped decks are shown", "Shipped with the app" in page)
+check("It says publishing is off when no token is set",
+      "not published" in page or "cannot write" in page)
+check("It shows how to switch publishing on", "secrets.toml" in page)
+check("A library pack can be downloaded", has(at, "download_button", "lib_pack"))
+check("A library pack can be restored", has(at, "button", "lib_restore_go"))
+check("Nothing shipped is offered for removal",
+      not has(at, "selectbox", "lib_rm_pick"))
+
+section("REPORT LIBRARY — an import is kept for the next person")
+_before = len(library.summary())
+at = fresh(nav="upload")
+_csv = ("Mail Title,Date,Test Environment,Developer Name,Status,Error Type,Error Severity\n"
+        "Task A,2026-09-04,Test,Alice Smith,First Time Correct,,\n"
+        "Task B,2026-09-05,Live,Alice Smith,Error,Content Related,Critical\n"
+        "Task C,2026-09-06,Test,Bob Jones,Observation,,\n")
+_rows, _rep = ingest.read_excel(_csv.encode(), "India", filename="Sep_2026_audit.csv")
+at.session_state["pending"] = {"India": {"staged": [{"rows": _rows, "report": _rep,
+                                                     "name": "Sep_2026_audit.csv",
+                                                     "data": _csv.encode()}],
+                                         "failed": []}}
+at.run()
+widget(at, "button", "conf_India").click().run()
+check("The imported file is kept in the library",
+      len(library.summary()) == _before + 1,
+      f"{_before} -> {len(library.summary())}")
+_entry = next((e for e in library.summary()
+               if e["source_name"] == "Sep_2026_audit.csv"), None)
+check("It is recorded against the right market and month",
+      bool(_entry) and _entry["market"] == "India" and _entry["periods"] == [(2026, 9)],
+      str(_entry["periods"]) if _entry else "missing")
+check("The import is logged in the history",
+      any(x["name"] == "Sep_2026_audit.csv" for x in at.session_state["db"]["sources"]))
+check("The app says the months were kept, not just imported",
+      "report library" in body(at).lower())
+
+# This is the whole point: a brand-new visitor, with no session state at all,
+# gets the month somebody else uploaded.
+_next = AppTest.from_file(APP, default_timeout=300)
+_next.session_state["db"] = store._empty_db()
+_next.session_state["settings"] = store._default_settings()
+_next.run()
+_ndb = _next.session_state["db"]
+check("A brand-new session inherits the imported month",
+      (2026, 9) in {(r["year"], r["month"]) for r in _ndb["tasks"]["India"]},
+      str(sorted({(r["year"], r["month"]) for r in _ndb["tasks"]["India"]})))
+check("And still has the shipped C3 history",
+      len(_ndb["monthly"]["C3"]) == 6, str(len(_ndb["monthly"]["C3"])))
+_next.session_state["market"] = "India"
+_next.session_state["nav"] = "results"
+_next.run()
+ran_clean(_next, "It can report on a month it never uploaded")
+
+section("REPORT LIBRARY — removing a kept month")
+at = fresh(nav="data")
+check("An imported file is offered for removal", has(at, "selectbox", "lib_rm_pick"))
+_opts = widget(at, "selectbox", "lib_rm_pick").options
+check("Only imported files are listed",
+      all("Quality_Defect_Report" not in o for o in _opts), str(_opts))
+widget(at, "selectbox", "lib_rm_pick").select(
+    next(o for o in _opts if "Sep_2026_audit.csv" in o)).run()
+widget(at, "button", "lib_rm_go").click().run()
+check("Removing it takes it out of the library",
+      not any(e["source_name"] == "Sep_2026_audit.csv" for e in library.summary()))
+_after = AppTest.from_file(APP, default_timeout=300)
+_after.session_state["db"] = store._empty_db()
+_after.session_state["settings"] = store._default_settings()
+_after.run()
+check("And out of a fresh session's history",
+      (2026, 9) not in {(r["year"], r["month"])
+                        for r in _after.session_state["db"]["tasks"]["India"]})
+
+section("PUBLISHING — the app reads its own configuration")
+check("The app exposes a publish configuration step",
+      hasattr(__import__("app"), "publish_config"))
+check("With no secrets file it stays off", publish.enabled() is False,
+      str(publish.status()))
+
+
 section("HELP — the reference material is intact")
 at = fresh(nav="help")
 ran_clean(at, "Help renders")
@@ -611,8 +779,10 @@ for phrase in ["Error-Free Tasks = No Error + Observation", "Quality Score    = 
     check(f"Help still explains: {phrase[:38]}", phrase in page)
 check("Help documents the new page layout", "Finding your way around" in page)
 
+reset_library()
 section("EMPTY STATES — no data anywhere")
 at = fresh(seed=False)
+check("India is the market with no kept history", not library.periods_for("India"))
 for key, expect in [("home", "No data stored"), ("results", "No analysis to show"),
                     ("upload", "Read an audit sheet above")]:
     at.session_state["nav"] = key
@@ -626,7 +796,7 @@ check("Compare is never empty, because two markets ship with the app",
       not at.exception and "At least two markets are needed" not in body(at))
 at.session_state["nav"] = "data"
 at.run()
-check("Data Manager shows the built-in roster with nothing uploaded",
+check("Data Manager shows the library roster with nothing uploaded",
       not at.exception and "Current grouping" in body(at))
 
 section("REGRESSION — the four-step workflow is still visible end to end")

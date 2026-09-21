@@ -246,6 +246,18 @@ def add_monthly(db, market, blocks, source_name):
     return removed
 
 
+def log_import(db, market, kind, name, count, replaced=0, periods=()):
+    """
+    Record an import that did not go through add_tasks.
+
+    A workbook kept in the report library is written there rather than pushed
+    straight into the working database, but it is still an import and still
+    belongs in the history — that history is the audit trail of what was
+    loaded and when, and it survives every reset.
+    """
+    _log_source(db, market, kind, name, count, replaced, set(periods))
+
+
 def _log_source(db, market, kind, name, count, replaced, periods):
     db.setdefault("sources", []).append({
         "market": market, "kind": kind, "name": name, "rows": count,

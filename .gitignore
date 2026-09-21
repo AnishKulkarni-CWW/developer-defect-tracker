@@ -1,6 +1,16 @@
-# Runtime data. The app writes its database, settings and backups here; they
-# belong to whoever is running it, not to the repository.
+# Runtime working copy. The app writes its database, settings and backups here;
+# they belong to whoever is running it, not to the repository.
+#
+# NOT ignored, deliberately: qars/library/. That folder is the permanent record
+# — every month the app knows, as the file it came from — and it is meant to be
+# committed. An imported workbook that is not in the repository does not
+# survive a hosted server restarting.
 data/
+
+# Credentials. The optional GitHub token that publishes the library lives here,
+# and must never reach the repository it publishes to.
+.streamlit/secrets.toml
+*.secrets.toml
 
 # Local environments and caches
 .venv/

@@ -197,14 +197,55 @@ html, body, .stApp, [data-testid="stAppViewContainer"] {
   padding-top:1.1rem !important; padding-bottom:3.5rem;
   max-width:1560px;
 }
-/* Streamlit's own top toolbar held only a Deploy prompt and a menu that is
-   hidden below. Removing it lets the app own the full height of the page. */
-header[data-testid="stHeader"], [data-testid="stHeader"],
-[data-testid="stToolbar"], .stAppHeader { display:none !important; height:0 !important; }
-#MainMenu, footer { visibility:hidden; }
-/* The built-in running indicator sits top-right, says nothing useful and
-   shifts the layout. The app reports its own progress instead. */
-[data-testid="stStatusWidget"] { display:none !important; }
+/* Streamlit's top bar holds two very different things: a Deploy prompt and a
+   menu, which this app has no use for, and — once the rail is collapsed — the
+   ONLY control that opens it again. Hiding the bar outright took the reopen
+   arrow with it and left the rail unreachable with no way back.
+
+   So the bar is emptied rather than removed: flattened to no height, no
+   background and no pointer target, with the pieces we do not want hidden by
+   name and the sidebar control kept and restyled. */
+header[data-testid="stHeader"], .stAppHeader {
+  background:transparent !important; height:0 !important; min-height:0 !important;
+  pointer-events:none !important; box-shadow:none !important; border:0 !important;
+}
+[data-testid="stToolbar"] { pointer-events:none !important; }
+[data-testid="stAppDeployButton"], [data-testid="stToolbarActions"],
+[data-testid="stMainMenu"], [data-testid="stStatusWidget"],
+#MainMenu, footer { display:none !important; }
+
+/* Reopening the rail. Fixed to the viewport so the flattened bar's zero height
+   cannot clip it, and above the sticky progress strip so it stays clickable
+   while a report builds. */
+[data-testid="stExpandSidebarButton"],
+[data-testid="stSidebarCollapsedControl"] button,
+[data-testid="stSidebarCollapsedControl"] {
+  position:fixed !important; top:10px !important; left:10px !important;
+  width:34px !important; height:34px !important; padding:0 !important;
+  display:flex !important; align-items:center !important; justify-content:center !important;
+  pointer-events:auto !important; visibility:visible !important; opacity:1 !important;
+  z-index:1000005 !important;
+  background:var(--card) !important; color:var(--brand) !important;
+  border:1px solid var(--border) !important; border-radius:10px !important;
+  box-shadow:var(--shadow-2) !important;
+}
+[data-testid="stExpandSidebarButton"]:hover,
+[data-testid="stSidebarCollapsedControl"] button:hover {
+  border-color:var(--brand) !important; background:var(--brand-soft) !important;
+}
+
+/* Streamlit only fades the collapse arrow in on hover, which is easy to miss
+   and impossible on a touch screen. In our own rail it is always there. */
+[data-testid="stSidebarCollapseButton"],
+[data-testid="stSidebarCollapseButton"] button {
+  visibility:visible !important; opacity:1 !important;
+}
+[data-testid="stSidebarCollapseButton"] button {
+  color:var(--muted) !important; border-radius:9px !important;
+}
+[data-testid="stSidebarCollapseButton"] button:hover {
+  color:var(--brand) !important; background:var(--card-2) !important;
+}
 
 h1, h2, h3, h4, h5 { font-family:var(--ui); color:var(--ink); letter-spacing:-.015em; }
 .stApp a { color:var(--brand); }
@@ -218,8 +259,13 @@ section[data-testid="stSidebar"] {
   width:286px !important; min-width:286px !important;
 }
 section[data-testid="stSidebar"] > div { padding-top:0 !important; }
-section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding:14px 14px 22px; }
-section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] { padding-bottom:0; height:0; }
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding:2px 14px 22px; }
+/* The collapse arrow lives in this strip. Collapsing it to zero height, as an
+   earlier pass did, pushed the arrow half off the top of the screen. */
+section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] {
+  padding:9px 12px 0 !important; height:auto !important; min-height:34px;
+  display:flex !important; align-items:center; justify-content:flex-end;
+}
 
 .qrs-brand { display:flex; align-items:center; gap:11px; padding:8px 8px 16px; }
 .qrs-brand .mark {
@@ -314,8 +360,10 @@ section[data-testid="stSidebar"] .st-key-nav_help_cta button:hover {
     radial-gradient(520px 260px at 62% 130%, $hero_blob2 0%, transparent 60%),
     linear-gradient(100deg, $hero_a 0%, $hero_b 55%, $hero_c 100%);
   border:1px solid $hero_bd; border-radius:22px;
-  padding:30px 34px; margin-bottom:20px;
+  padding:26px 32px; margin-bottom:20px;
 }
+/* One headline and nothing else: no stray margin below it. */
+.qrs-hero h1:only-child { margin:0; }
 .qrs-hero .eyebrow {
   font-size:.70rem; font-weight:800; letter-spacing:.13em; text-transform:uppercase;
   color:var(--brand); margin-bottom:9px;

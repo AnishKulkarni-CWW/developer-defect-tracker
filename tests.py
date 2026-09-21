@@ -24,11 +24,14 @@ from __future__ import annotations
 import inspect
 import io
 import os
+import shutil
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from qars import baseline, deck, ingest, metrics, normalize as nz, pdf, store  # noqa: E402
+from qars import (deck, ingest, library, metrics, normalize as nz,  # noqa: E402
+                  pdf, publish, store)
 
 PASS, FAIL = [], []
 
@@ -54,6 +57,70 @@ def _db_with(market, tasks=(), blocks=()):
     if blocks:
         db["monthly"][market] = list(blocks)
     return db
+
+
+SHIPPED_DIR = library.DIR
+
+
+class TempLibrary:
+    """
+    Point the library at a throwaway folder for the duration of a block.
+
+    `copy_shipped` brings the two vendored decks along, so a test can start
+    from the app's real history and add to it without any chance of writing
+    into the repository.
+    """
+
+    def __init__(self, copy_shipped=True):
+        self.copy_shipped = copy_shipped
+
+    def __enter__(self):
+        self.tmp = tempfile.mkdtemp(prefix="qars_lib_")
+        self.saved = (library.DIR, library.INDEX)
+        library.DIR = self.tmp
+        library.INDEX = os.path.join(self.tmp, "index.json")
+        library._CACHE.clear()
+        if self.copy_shipped:
+            for name in os.listdir(SHIPPED_DIR):
+                src = os.path.join(SHIPPED_DIR, name)
+                if os.path.isdir(src):
+                    shutil.copytree(src, os.path.join(self.tmp, name))
+                elif name == "index.json":
+                    shutil.copy2(src, os.path.join(self.tmp, name))
+        return self
+
+    def __exit__(self, *exc):
+        library.DIR, library.INDEX = self.saved
+        library._CACHE.clear()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        return False
+
+
+def _workbook(year, month, n=60, dev="Dev Lib", status_every=10):
+    """A minimal audit sheet as .csv bytes — the same reader handles both."""
+    lines = ["Mail Title,Date,Test Environment,Developer Name,Status,Error Type,"
+             "Error Severity"]
+    for i in range(n):
+        day = (i % 27) + 1
+        status = "Error" if i % status_every == 0 else "First Time Correct"
+        cat = "Content Related" if status == "Error" else ""
+        sev = "Major" if status == "Error" else ""
+        lines.append(f"Task {i + 1},{year}-{month:02d}-{day:02d},Test,{dev},"
+                     f"{status},{cat},{sev}")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def _lib_settings(db):
+    st_ = _settings()
+    st_["dev_aliases"], _ = nz.auto_merge_map(
+        {r["dev_raw"] for m in store.MARKETS for r in db["tasks"][m] if r.get("dev_raw")}
+        | {d["raw"] for m in store.MARKETS for b in db["monthly"][m]
+           for d in b.get("developers", [])})
+    return st_
+
+
+def _lib_totals(db, market):
+    return metrics.totals(metrics.select(db, market, _lib_settings(db), {}))
 
 
 def _rows(year, month, error=0, no_error=0, observation=0, dev="Dev A", env="Internal",
@@ -465,22 +532,26 @@ check("Test still classifies as it always did", nz.norm_env("Test") == nz.ENV_IN
 check("Internal is presented as the test link", nz.env_label(nz.ENV_INTERNAL) == "Test link")
 check("External is presented as the live link", nz.env_label(nz.ENV_EXTERNAL) == "Live link")
 
-section("BUILT-IN REPORTS — the decks that ship with the app")
-check("Both markets have a built-in deck", baseline.markets() == ["C3", "Japan"],
-      str(baseline.markets()))
+section("REPORT LIBRARY — what ships with the app")
+check("Both markets have a shipped report", library.markets() == ["C3", "Japan"],
+      str(library.markets()))
+_ship = library.summary()
+check("The shipped entries are marked as such", all(e["shipped"] for e in _ship))
+check("Each covers six months", sorted(e["months"] for e in _ship) == [6, 6],
+      str([e["months"] for e in _ship]))
+check("India ships with no history", not library.periods_for("India"))
+check("The library folder is writable here", library.writable())
+
 _bdb = store._empty_db()
-_added = baseline.seed(_bdb)
+_added = library.seed(_bdb)
 check("Seeding adds six months per market", _added == {"C3": 6, "Japan": 6}, str(_added))
-check("Seeding twice adds nothing", baseline.seed(_bdb) == {})
-check("India ships with no built-in history", not baseline.periods_for("India"))
-check("Built-in months are marked as such",
-      all(baseline.is_baseline(b) for b in _bdb["monthly"]["C3"]))
+check("Seeding twice adds nothing", library.seed(_bdb) == {})
+check("Library months are tagged", all(library.is_library(b) for b in _bdb["monthly"]["C3"]))
+check("Shipped months are recognisable",
+      all(library.is_shipped(b) for b in _bdb["monthly"]["C3"]))
 check("Seeding writes no import history", not _bdb["sources"])
 
-_bs = _settings()
-_names = {d["raw"] for m in baseline.markets() for b in baseline.blocks_for(m)
-          for d in b["developers"]}
-_bs["dev_aliases"], _ = nz.auto_merge_map(_names)
+_bs = _lib_settings(_bdb)
 _bt = metrics.totals(metrics.select(_bdb, "C3", _bs, {}))
 for label, got, want in [("total tasks", _bt["total_tasks"], 641),
                          ("error-free tasks", _bt["error_free"], 598),
@@ -488,22 +559,149 @@ for label, got, want in [("total tasks", _bt["total_tasks"], 641),
                          ("test-link defects", _bt["internal"], 37),
                          ("live-link defects", _bt["external"], 6),
                          ("observations", _bt["observations"], 38)]:
-    check(f"Built-in C3 reproduces the published {label}", got == want, f"{got} vs {want}")
-check("Built-in C3 reproduces the published quality score", _bt["score"] == 93.29,
+    check(f"Shipped C3 reproduces the published {label}", got == want, f"{got} vs {want}")
+check("Shipped C3 reproduces the published quality score", _bt["score"] == 93.29,
       metrics.fmt_score(_bt["score"]))
-_jt = metrics.totals(metrics.select(_bdb, "Japan", _bs, {}))
-check("Built-in Japan carries six months", _jt["months"] == 6, str(_jt["months"]))
-check("Built-in Japan reports a score", _jt["score"] is not None,
-      metrics.fmt_score(_jt["score"]))
 
-# A workbook for a built-in month must win: task detail beats a deck summary.
-store.add_tasks(_bdb, "C3", _rows(2026, 1, error=1, no_error=9), "jan.xlsx")
-_over = metrics.totals(metrics.select(_bdb, "C3", _bs, {"periods": [(2026, 1)]}))
-check("An uploaded workbook replaces the built-in month for that period",
-      _over["total_tasks"] == 10, str(_over["total_tasks"]))
-check("The other built-in months are untouched",
-      metrics.totals(metrics.select(_bdb, "C3", _bs,
-                                    {"periods": [(2026, 2)]}))["total_tasks"] == 68)
+section("REPORT LIBRARY — a month imported once is kept for good")
+with TempLibrary() as _tl:
+    db = store._empty_db()
+    library.seed(db)
+    check("Starts on the six shipped months", _lib_totals(db, "C3")["months"] == 6)
+
+    _e7, _r7 = library.add("C3", "C3_July_2026.csv", _workbook(2026, 7, 120))
+    check("Importing a workbook keeps the file",
+          os.path.exists(os.path.join(library.DIR, _e7["file"])), _e7["file"])
+    check("It replaced nothing", _r7 == [])
+    check("The entry records the month it covers", _e7["periods"] == ["2026-07"],
+          str(_e7["periods"]))
+    library.resync(db)
+    _t7 = _lib_totals(db, "C3")
+    check("July joins the six shipped months", _t7["months"] == 7, str(_t7["months"]))
+    check("July lands after June, not before",
+          _t7["period_label"].endswith("Jul 2026"), _t7["period_label"])
+    check("Its rows are counted", _t7["total_tasks"] == 641 + 120,
+          str(_t7["total_tasks"]))
+
+    library.add("C3", "C3_August_2026.csv", _workbook(2026, 8, 90))
+    library.resync(db)
+    _t8 = _lib_totals(db, "C3")
+    check("The next month only needs its own file", _t8["months"] == 8, str(_t8["months"]))
+    check("Nothing earlier had to be re-uploaded",
+          _t8["total_tasks"] == 641 + 120 + 90, str(_t8["total_tasks"]))
+
+    # THE point of the library: a new process, with no session state at all,
+    # sees everything that was ever imported.
+    _fresh = store._empty_db()
+    library.resync(_fresh)
+    _tf = _lib_totals(_fresh, "C3")
+    check("A brand-new session sees every kept month",
+          (_tf["months"], _tf["total_tasks"]) == (_t8["months"], _t8["total_tasks"]),
+          f"{_tf['months']} months / {_tf['total_tasks']} tasks")
+    check("A brand-new session sees Japan's history too",
+          _lib_totals(_fresh, "Japan")["months"] == 6)
+
+    section("REPORT LIBRARY — re-importing a month replaces it")
+    _e7b, _r7b = library.add("C3", "C3_July_2026_corrected.csv", _workbook(2026, 7, 150))
+    check("The earlier July file is replaced, not added to",
+          [r["source_name"] for r in _r7b] == ["C3_July_2026.csv"],
+          str([r["source_name"] for r in _r7b]))
+    check("The replaced file is gone from the folder",
+          not os.path.exists(os.path.join(library.DIR, _r7b[0]["file"])))
+    library.resync(db)
+    _t9 = _lib_totals(db, "C3")
+    check("The month is not counted twice", _t9["total_tasks"] == 641 + 150 + 90,
+          str(_t9["total_tasks"]))
+    check("The month count is unchanged", _t9["months"] == 8, str(_t9["months"]))
+
+    section("REPORT LIBRARY — a reviewer's month correction survives")
+    # The file says September; the reviewer files it under October. Reloading
+    # from disk must honour that, not re-read the sheet's own dates.
+    library.add("C3", "C3_misdated.csv", _workbook(2026, 9, 40), force_month=(2026, 10))
+    _f2 = store._empty_db()
+    library.resync(_f2)
+    _periods = {(r["year"], r["month"]) for r in _f2["tasks"]["C3"]}
+    check("The forced month is what reloads", (2026, 10) in _periods
+          and (2026, 9) not in _periods, str(sorted(_periods)))
+
+    section("REPORT LIBRARY — removing and refusing")
+    _before = len(library.summary())
+    _gone = library.remove(_e7b["id"])
+    check("Removing an entry drops it", len(library.summary()) == _before - 1)
+    check("It names what it removed", _gone["source_name"] == "C3_July_2026_corrected.csv")
+    library.resync(db)
+    check("Its months leave the history too",
+          (2026, 7) not in {(r["year"], r["month"]) for r in db["tasks"]["C3"]})
+    _shipped_id = next(e["id"] for e in library.summary() if e["shipped"])
+    try:
+        library.remove(_shipped_id)
+        check("A shipped report cannot be removed", False, "it was removed")
+    except library.LibraryError as exc:
+        check("A shipped report cannot be removed", True, str(exc)[:46] + "…")
+    try:
+        library.remove("not-a-real-entry")
+        check("Removing something that is not there is refused", False, "accepted")
+    except library.LibraryError:
+        check("Removing something that is not there is refused", True)
+    for label, name, blob in [("an unreadable file", "junk.xlsx", b"not a workbook"),
+                              ("an empty file", "empty.csv", b""),
+                              ("a file type it cannot keep", "notes.docx", b"abc")]:
+        _n = len(library.summary())
+        try:
+            library.add("C3", name, blob)
+            check(f"The library refuses {label}", False, "it was kept")
+        except library.LibraryError:
+            check(f"The library refuses {label}", len(library.summary()) == _n,
+                  "and kept nothing")
+
+    section("REPORT LIBRARY — the pack moves history between machines")
+    _pack = library.export_pack()
+    check("A pack is produced", len(_pack) > 1000, f"{len(_pack) // 1024} KB")
+    _names = sorted(e["source_name"] for e in library.summary())
+    _pack_db = store._empty_db()
+    library.resync(_pack_db)
+    _pack_months = _lib_totals(_pack_db, "C3")["months"]
+    _pack_tasks = _lib_totals(_pack_db, "C3")["total_tasks"]
+
+with TempLibrary(copy_shipped=False) as _tl2:
+    check("An empty library has nothing", library.summary() == [])
+    _n = library.restore_pack(_pack)
+    check("Restoring a pack brings every file back", _n >= 3, f"{_n} files")
+    check("And the same entries", sorted(e["source_name"] for e in library.summary())
+          == _names, str(sorted(e["source_name"] for e in library.summary())))
+    _rdb = store._empty_db()
+    library.resync(_rdb)
+    _rt = _lib_totals(_rdb, "C3")
+    check("A restored library reports exactly the history it was packed from",
+          (_rt["months"], _rt["total_tasks"]) == (_pack_months, _pack_tasks),
+          f"{_rt['months']}/{_rt['total_tasks']} vs {_pack_months}/{_pack_tasks}")
+    for label, blob in [("plain text", b"hello"), ("a zip that is not a pack",
+                                                   b"PK\x03\x04nonsense")]:
+        try:
+            library.restore_pack(blob)
+            check(f"Restore rejects {label}", False, "accepted it")
+        except library.LibraryError:
+            check(f"Restore rejects {label}", True)
+
+check("The real library is untouched by all of that",
+      library.DIR == SHIPPED_DIR and [e["source_name"] for e in library.summary()]
+      == ["C3_Quality_Defect_Report_2026.pptx", "Japan_Quality_Defect_Report_2026.pptx"],
+      str([e["source_name"] for e in library.summary()]))
+
+section("PUBLISHING — off unless it is switched on")
+publish.configure(token="", repo="")
+check("Publishing is off by default", publish.enabled() is False)
+check("Its status says so", publish.status()["enabled"] is False)
+_ok, _detail = publish.push({"a": b"b"}, "msg")
+check("Pushing with no configuration fails politely", _ok is False
+      and "not configured" in _detail, _detail[:50])
+_ok, _detail = publish.delete(["a"], "msg")
+check("Deleting with no configuration fails politely", _ok is False)
+_st = publish.configure(token="tok", repo="owner/repo", branch="trunk")
+check("Configuring turns it on", _st == {"enabled": True, "repo": "owner/repo",
+                                         "branch": "trunk", "has_token": True}, str(_st))
+publish.configure(token="", repo="")
+check("And it can be turned back off", publish.enabled() is False)
 
 section("SINGLE MONTH — no consolidated section")
 _multi = metrics.select(_db_with("India", tasks=tasks), "India", _settings(), {})
@@ -607,11 +805,8 @@ def _overflows(pptx_bytes):
 
 
 _geom_db = store._empty_db()
-baseline.seed(_geom_db)
-_geom_s = _settings()
-_geom_s["dev_aliases"], _ = nz.auto_merge_map(
-    {d["raw"] for m in baseline.markets() for b in baseline.blocks_for(m)
-     for d in b["developers"]})
+library.seed(_geom_db)
+_geom_s = _lib_settings(_geom_db)
 _cases = [
     ("six months from a built-in report",
      metrics.select(_geom_db, "C3", _geom_s, {}), {}),

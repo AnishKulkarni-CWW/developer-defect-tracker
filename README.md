@@ -1,17 +1,21 @@
 # QA Report Studio
 
 Turns your monthly QA audit sheets into a branded PowerPoint and PDF quality
-report across three markets — **India, C3 and Japan** — completely offline, with
-no API keys, no accounts, no usage limits and no external database.
+report across three markets — **India, C3 and Japan** — with no API keys, no
+accounts, no usage limits and no external database.
 
 The brand on the cover is whatever you type on the Settings page; nothing in the
 app is tied to one client.
 
-**January–June 2026 for C3 and Japan is already in the app.** Those months were
-issued as PowerPoint before this tool existed and the audit workbooks behind them
-no longer exist, so the decks themselves ship inside the app and are read
-straight into the database. Upload a workbook for any later month and the whole
-period reports together.
+**You upload one month, not the whole year.** Every sheet the app imports is
+kept in its **report library** — the folder `qars/library/`, alongside the two
+PowerPoint reports that were issued before this tool existed. Everything in that
+folder is loaded at start-up, so January–June 2026 for C3 and Japan is there
+before you upload anything, July joins it when you import July, and next month
+you import only August. Everyone using the same server sees the same history.
+
+On a hosted server there is one more step to make a month outlive a restart —
+see [The report library](#the-report-library).
 
 ---
 
@@ -21,7 +25,7 @@ period reports together.
 2. [Running the frontend](#2-running-the-frontend)
 3. [Running the backend](#3-running-the-backend)
 4. [Environment variables](#4-environment-variables)
-5. [Using the application](#5-using-the-application)
+5. [Using the application](#5-using-the-application) — including [the report library](#the-report-library)
 6. [Generating reports](#6-generating-reports)
 7. [How the quality score works](#7-how-the-quality-score-works)
 8. [Running the tests](#8-running-the-tests)
@@ -139,20 +143,34 @@ data/backups/         automatic snapshots taken before anything destructive
 This is what makes the offline requirement achievable, and it is why the app can
 later be frozen into a single `.exe` that a colleague can run by double-clicking.
 
-If you want your data on another PC, copy `data/database.json` across. That is
-the whole migration.
+If you want the history on another PC, copy `qars/library/` across — or use
+*Data Manager → Report library → Download the library pack* and restore it on
+the other machine. `data/database.json` is only the working copy; the library is
+the record.
 
 ---
 
 ## 4. Environment variables
 
-**None are required.** The application reads no environment variables and needs
-no `.env` file. If you were expecting to configure API keys, database URLs or
-service endpoints — there are none, because the app calls nothing external.
+**None are required.** The application needs no `.env` file, and with nothing
+set it makes no network calls at all.
 
 Everything that would normally be an environment variable is either on the
-**Settings** page of the app (organisation name, prepared-by)
-or in `.streamlit/config.toml` (theme, upload limit and server settings).
+**Settings** page of the app (organisation name, prepared-by) or in
+`.streamlit/config.toml` (theme, upload limit and server settings).
+
+Three optional variables switch on publishing the report library back to
+GitHub, which is the one feature that uses the network. They are an alternative
+to the `[github]` block in `.streamlit/secrets.toml`:
+
+| Variable | Effect |
+|---|---|
+| `QARS_GITHUB_TOKEN` | A token with Contents: write on the repository |
+| `QARS_GITHUB_REPO` | `owner/repository` |
+| `QARS_GITHUB_BRANCH` | Branch to commit to (default `main`) |
+
+`QARS_STORAGE=disk` also forces the working copy onto disk on a host the app
+would otherwise treat as temporary.
 
 The only variables that have any effect are Streamlit's own optional ones, which
 you will almost certainly never need:
@@ -205,10 +223,13 @@ filter and every chart works. Several months at once is fine.
 Press **Read file(s)**. Nothing is saved yet.
 
 There is no separate deck upload. The months that only ever existed as a
-PowerPoint report — January to June 2026 for C3 and Japan — are built into the
-app and are already there before you upload anything. A workbook for one of
+PowerPoint report — January to June 2026 for C3 and Japan — are in the report
+library and are already there before you upload anything. A workbook for one of
 those months *replaces* the deck figures for it, because task-level detail is
 richer than a recovered summary.
+
+On **Confirm and import** the file itself is written into the library, so it is
+there for the next report and the next person — see below.
 
 ### Step 2 — Review and validate
 
@@ -263,6 +284,55 @@ CSV. Downloading does not rebuild anything. Below them is the full dashboard —
 KPI tiles, the monthly trend, the defect-category donut, the top performers, the
 task-composition bar, key insights, recommendations, and the monthly and
 developer tables.
+
+### The report library
+
+A report covering January to September is built from nine months of history, and
+nobody wants to upload nine files every month. So the app keeps them.
+
+Each imported sheet is stored in `qars/library/<Market>/` as the file it came
+from, with `qars/library/index.json` recording which file covers which months.
+Everything there is loaded on every start-up. That gives three things at once:
+
+- **you upload only the newest month** — July stays, August is added next to it;
+- **a re-import replaces, never duplicates** — a corrected sheet for a month
+  already held swaps it out;
+- **everyone on the same server shares the history** — they all read the folder.
+
+**Data Manager → Report library** shows what is kept, where each month came from
+(*Shipped with the app* or *Imported*), and lets you remove an imported file
+again. Removing one takes its months out of the history; the two shipped reports
+stay, because they are part of the application.
+
+#### Making months permanent on a hosted server
+
+On a laptop the library is simply a folder: what goes in stays in.
+
+A hosted server (Streamlit Community Cloud and the like) rebuilds its disk from
+the repository every time it restarts. An imported file is shared with everyone
+using the app *right now*, but to outlive a restart it has to reach the
+repository. Two ways, both on the Report library tab:
+
+**Automatic.** Put a GitHub token in `.streamlit/secrets.toml` and every import
+commits itself:
+
+```toml
+[github]
+token  = "ghp_..."          # a fine-grained token with Contents: write
+repo   = "owner/repository"
+branch = "main"
+```
+
+(Or set `QARS_GITHUB_TOKEN`, `QARS_GITHUB_REPO` and `QARS_GITHUB_BRANCH`.) The
+commit triggers the usual redeploy, and the month is part of the app from then
+on. **This is the only part of the product that uses the network, and only when
+you switch it on.** With no token configured the app makes no network calls.
+
+**By hand.** *Download the library pack*, unzip it over `qars/library/` in the
+repository, commit, push. Same result.
+
+The Report library tab says which of these applies to the server you are on, in
+those words, rather than leaving you to guess whether an upload was kept.
 
 ### Score bands, and why there is no target
 
@@ -452,9 +522,10 @@ python tests_ui.py     # the interface
 
 **`tests.py`** covers the calculation engine, ingestion, filtering, legacy deck
 conversion, name merging, error handling, hosted storage and output
-consistency, the built-in reports, the no-target rule and slide geometry.
-140 checks run on their own; more when the optional sample workbooks referenced
-at the top of the file are present.
+consistency, the report library, the no-target rule and slide geometry.
+178 checks run on their own; more when the optional sample workbooks referenced
+at the top of the file are present. The library tests run against a throwaway
+copy of the folder, so they never write into the repository.
 
 **`tests_ui.py`** boots the real `app.py` through Streamlit's own AppTest
 harness and clicks the real widgets: every page renders, every nav item
@@ -462,13 +533,15 @@ switches, the market and period pickers work, a file is staged, reviewed,
 validated and imported, every filter and section switch is present, a report
 generates, and the deck it produces carries the same figures the screen showed.
 It also exercises the destructive paths — delete a period, clear a market,
-clear everything — and checks each empty state explains itself. 188 checks.
+clear everything — and checks each empty state explains itself. It also proves
+the point of the library: a month imported in one session is picked up by a
+brand-new one. 223 checks.
 
 Both end with their own count:
 
 ```
-  140 passed, 0 failed
-  188 passed, 0 failed
+  178 passed, 0 failed
+  223 passed, 0 failed
 ```
 
 ---
@@ -605,8 +678,10 @@ public* unless you restrict viewers in the app settings.
 
 Nothing else is required:
 
-- **No secrets.** The app calls no external service, so the *Secrets* box stays
-  empty.
+- **Secrets are optional.** Leave the box empty and the app works, keeping
+  imports for as long as the server is up. Fill in the `[github]` block from
+  [The report library](#the-report-library) and every import commits itself to
+  the repository, so months survive a restart and reach every visitor.
 - **No `packages.txt`.** Every dependency is pure Python or ships prebuilt
   wheels.
 - **`.streamlit/config.toml`** is picked up automatically for the theme.
@@ -678,8 +753,11 @@ QA_Report_Studio/
 ├── .streamlit/config.toml  Theme and server settings
 ├── data/                   Your JSON database (created on first run)
 └── qars/
-    ├── baseline.py         Reads the decks that ship with the app
-    ├── baseline/           Those decks (C3 and Japan, Jan-Jun 2026)
+    ├── library.py          The report library — every month, as its own file
+    ├── library/            Those files, plus index.json
+    │   ├── C3/             Jan-Jun 2026 as issued, then whatever you import
+    │   └── Japan/          Jan-Jun 2026 as issued
+    ├── publish.py          Optional: commits the library back to GitHub
     ├── theme.py            Design system — palette, tokens and the app stylesheet
     ├── store.py            Atomic JSON persistence
     ├── normalize.py        Name, status, category and severity cleaning
