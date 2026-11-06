@@ -141,7 +141,20 @@ def boot():
     # working data or restoring an older export cannot leave a market with a
     # hole in its history, and so a month one person uploads is there for the
     # next person to open the app.
-    if library.seed(st.session_state.db):
+    #
+    # A saved working copy can also fall behind the library — a `git pull`
+    # brought new months, a pack was restored, a file was replaced elsewhere —
+    # so when the library's fingerprint differs from the one the copy was built
+    # against, the library-backed part is rebuilt rather than topped up.
+    db = st.session_state.db
+    sig = library.signature()
+    if db.get("library_sig") != sig:
+        changed = library.resync(db)
+        db["library_sig"] = sig
+        changed = changed or True
+    else:
+        changed = library.seed(db)
+    if changed:
         # The library brings a roster this session has never seen. Without the
         # same name-folding an upload triggers, one person spelled two ways is
         # counted twice and the market reports more developers than its own
@@ -493,11 +506,32 @@ def history_note(market):
        'together. A sheet for a month already held replaces it.</div>')
 
 
+def keep_note():
+    """
+    Whether what is imported here will still be here next month.
+
+    Said on the page where the import happens, because that is where the
+    belief forms. On a laptop the library is an ordinary folder and nothing
+    needs saying; on a hosted server the answer depends on publishing.
+    """
+    pub = publish.status()
+    if pub["enabled"]:
+        md(f'<div class="qrs-ok">✅ Imports are committed to <code>{esc(pub["repo"])}</code> '
+           f'on <code>{esc(pub["branch"])}</code> and become part of the app — next month '
+           'you upload only the new month.</div>')
+    elif store.storage_mode() == "session":
+        md('<div class="qrs-note">⚠️ <b>This server forgets imports when it restarts.</b> '
+           'They are shared with everyone using it now, but to keep them for good, switch '
+           'on publishing in <b>Data Manager → Report library</b> — it takes a minute, '
+           'once.</div>')
+
+
 def upload_cards(market):
     db = st.session_state.db
     ep = st.session_state.upload_epoch
 
     history_note(market)
+    keep_note()
     with st.container(border=True):
         md('<div style="font-weight:800;font-size:.95rem">📄 Audit sheet</div>'
            '<div style="color:' + T.hx(T.TEXT_MUTED) + ';font-size:.78rem;margin:4px 0 10px">'
@@ -532,8 +566,14 @@ def _stage_excel(market, files):
     for f in files:
         try:
             data = f.getvalue() if hasattr(f, "getvalue") else f.read()
-            rows, rep = ingest.read_excel(data, market, filename=f.name)
-            staged.append({"rows": rows, "report": rep, "name": f.name, "data": data})
+            # A file whose name says which market it is for goes there, whatever
+            # market happens to be selected — three sheets arrive every month,
+            # and reading one on the wrong page used to file it there silently.
+            named = ingest.market_from_filename(f.name, store.MARKETS)
+            target = named or market
+            rows, rep = ingest.read_excel(data, target, filename=f.name)
+            staged.append({"rows": rows, "report": rep, "name": f.name, "data": data,
+                           "market": target, "routed": bool(named and named != market)})
         except ingest.IngestError as exc:
             failed.append((f.name, str(exc)))
         except Exception as exc:                              # noqa: BLE001
@@ -557,11 +597,18 @@ def _review_and_confirm(market, pend):
     corrections = {}
     for i, item in enumerate(pend["staged"]):
         rep = item["report"]
+        target = item.get("market", market)
         with st.container(border=True):
-            md(f'<div style="font-weight:800;font-size:.92rem">📗 {esc(rep["file"])}</div>'
+            md(f'<div style="font-weight:800;font-size:.92rem">📗 {esc(rep["file"])} '
+               f'&nbsp;{pill(target, T.BRAND)}</div>'
                f'<div style="color:{T.hx(T.TEXT_MUTED)};font-size:.76rem;margin-top:3px">'
                f'sheet <b>{esc(rep["sheet"])}</b> &nbsp;·&nbsp; header on row '
                f'{rep["header_row"]} &nbsp;·&nbsp; {rep["rows_kept"]} usable row(s)</div>')
+            if item.get("routed"):
+                md(f'<div class="qrs-info">📬 This file is named for <b>{esc(target)}</b>, '
+                   f'so it will be imported into <b>{esc(target)}</b> — not '
+                   f'{esc(market)}, which is the market selected at the top. Rename the '
+                   'file if that is wrong.</div>')
             m1, m2 = st.columns([2, 1])
             with m1:
                 found = ", ".join(rep["columns_found"])
@@ -613,9 +660,23 @@ def _review_and_confirm(market, pend):
     for item in pend["staged"]:
         rep = item["report"]
         msgs = []
-        if rep["skipped_unreadable"]:
-            msgs.append(f"{rep['skipped_unreadable']} row(s) skipped — no recognisable "
-                        f"Status or Developer ({', '.join(rep['skipped_examples'])}…).")
+        uncounted = rep.get("uncounted_tasks") or []
+        if uncounted:
+            shown = "; ".join(
+                f"row {u['row']}" + (f" “{esc(_clip(u['title'], 60))}”" if u["title"]
+                                     else "")
+                + f" — {esc(u['why'])}" for u in uncounted[:8])
+            more = f"; and {len(uncounted) - 8} more" if len(uncounted) > 8 else ""
+            msgs.append(f"{len(uncounted)} task row(s) will not be counted: {shown}{more}. "
+                        "Fill these in on the sheet and upload it again to count them.")
+        others = rep["skipped_unreadable"] - len(uncounted)
+        if others > 0:
+            msgs.append(f"{others} other row(s) skipped — they hold no task of their own "
+                        "(notes, stray cells, or the overflow of a long Details cell).")
+        for raw, typo in (rep.get("status_typos") or {}).items():
+            rows_ = ", ".join(str(n) for n in typo["rows"][:6])
+            msgs.append(f"Status “{esc(raw)}” (row {rows_}) looks like a typo, so it is "
+                        f"counted as {esc(typo['as'])}. Correct the sheet if that is wrong.")
         if rep["date_outliers"]:
             msgs.append(f"{len(rep['date_outliers'])} row(s) dated outside "
                         f"{rep['dominant_year']}: {', '.join(rep['date_outliers'][:5])}. "
@@ -632,9 +693,11 @@ def _review_and_confirm(market, pend):
 
     c1, c2, _ = st.columns([1.3, 1, 2.4])
     if c1.button("✅  Confirm and import", type="primary", key=f"conf_{market}", **WIDE_BTN):
-        total, kept, session_only = 0, [], []
+        total, kept, session_only, touched = {}, [], [], set()
         for i, item in enumerate(pend["staged"]):
             rows = item["rows"]
+            target = item.get("market", market)
+            touched.add(target)
             force = corrections.get(i)
             if force:
                 y, m = force
@@ -642,13 +705,13 @@ def _review_and_confirm(market, pend):
                     r["year"], r["month"] = y, m
                     if r.get("date"):
                         r["date"] = f"{y:04d}-{m:02d}-{r['date'][-2:]}"
-            total += len(rows)
+            total[target] = total.get(target, 0) + len(rows)
             periods = sorted({(r["year"], r["month"]) for r in rows})
             try:
-                entry, replaced = library.add(market, item["name"], item["data"],
+                entry, replaced = library.add(target, item["name"], item["data"],
                                               force_month=force)
                 kept.append((entry, replaced))
-                store.log_import(db, market, "excel", item["name"], len(rows),
+                store.log_import(db, target, "excel", item["name"], len(rows),
                                  len(replaced), periods)
             except library.LibraryError as exc:
                 # The library could not take it — a read-only checkout, say.
@@ -656,22 +719,24 @@ def _review_and_confirm(market, pend):
                 # session, and the person is told so rather than finding out
                 # after a restart.
                 session_only.append((item["name"], str(exc)))
-                store.add_tasks(db, market, rows, item["name"])
+                store.add_tasks(db, target, rows, item["name"])
         if kept:
             library.resync(db)
+            db["library_sig"] = library.signature()
         _apply_auto_merge()
         persist()
         st.session_state.pending.pop(market, None)
-        st.session_state.reports.pop(market, None)
-        st.session_state.cfg.pop(market, None)
-        _announce_import(market, kept, session_only, total)
+        for m in touched | {market}:
+            st.session_state.reports.pop(m, None)
+            st.session_state.cfg.pop(m, None)
+        _announce_import(kept, session_only, total)
         st.rerun()
     if c2.button("Cancel", key=f"canc_{market}", **WIDE_BTN):
         st.session_state.pending.pop(market, None)
         st.rerun()
 
 
-def _announce_import(market, kept, session_only, total):
+def _announce_import(kept, session_only, total):
     """
     Say where the months went, and make them permanent where that is possible.
 
@@ -683,51 +748,84 @@ def _announce_import(market, kept, session_only, total):
       * kept in the library only — shared with everyone using this server now,
         but a hosted server rebuilds its disk, so it needs publishing;
       * not kept at all — this session only.
+
+    `total` is {market: rows}; one confirmation can cover several markets now
+    that files are routed by name.
     """
-    flash("success", f"Imported {total} row(s) into {market}. Developer name "
-                     "variants are flagged on the Data Manager page — nothing was "
-                     "merged automatically.")
+    flash("success", "Imported " + ", ".join(f"{n} row(s) into {m}"
+                                             for m, n in sorted(total.items()))
+          + ". Developer name variants are flagged on the Data Manager page.")
     for name, why in session_only:
         flash("warning", f"**{name}** was imported but could not be kept: {why} "
                          "It will be gone when this session ends.")
     if not kept:
         return
 
-    months = sorted({p for entry, _ in kept for p in entry["periods"]})
-    added = ", ".join(months)
+    by_market = {}
+    for entry, replaced in kept:
+        by_market.setdefault(entry["market"], []).append((entry, replaced))
+    months = {m: ", ".join(sorted({p for e, _ in items for p in e["periods"]}))
+              for m, items in by_market.items()}
     if not publish.enabled():
-        flash("info", f"{len(kept)} file(s) added to the report library ({added}). "
-                      "Everyone using this server sees them straight away, and you "
-                      "never need to upload those months again. To keep them through "
-                      "a server restart, publish the library from **Data Manager → "
-                      "Report library**.")
+        for market, items in sorted(by_market.items()):
+            flash("info", f"{market}: {len(items)} file(s) added to the report library "
+                          f"({months[market]}). Everyone using this server sees them "
+                          "straight away, and you never need to upload those months again. "
+                          "To keep them through a server restart, publish the library from "
+                          "**Data Manager → Report library**.")
         return
+    # One commit for everything confirmed together: three markets uploaded at
+    # once must not land as three redeploys, each with a partial library.
+    ok, detail = _publish_entries(kept, "; ".join(f"{m} {months[m]}"
+                                                  for m in sorted(by_market)))
+    for market, items in sorted(by_market.items()):
+        flash("success" if ok else "warning",
+              (f"{market}: {len(items)} file(s) added to the report library "
+               f"({months[market]}) and committed to the repository — part of the app "
+               "now.") if ok
+              else (f"{market}: {len(items)} file(s) added to the report library "
+                    f"({months[market]}), but publishing to GitHub failed: {detail} They "
+                    "are live on this server; publish again from **Data Manager → Report "
+                    "library** to make them permanent."))
+    if ok:
+        flash("info", detail)
 
-    ok, detail = _publish_entries(kept, market, added)
-    flash("success" if ok else "warning",
-          (f"{len(kept)} file(s) added to the report library ({added}) and committed "
-           f"to the repository — they are part of the app now. {detail}") if ok else
-          (f"{len(kept)} file(s) added to the report library ({added}), but publishing "
-           f"to GitHub failed: {detail} They are live on this server; publish again "
-           "from **Data Manager → Report library** to make them permanent."))
+
+def _index_merge(removed=()):
+    """
+    Publish the index merged with the repository's copy, never written over it.
+
+    `removed` are library-relative paths this change deletes.
+    """
+    return {"qars/library/index.json":
+            lambda remote: library.merged_index_bytes(remote, removed)}
 
 
-def _publish_entries(kept, market, added):
-    """Commit the new library files, the index, and any file they replaced."""
+def _publish_entries(kept, label):
+    """
+    Commit an import as one change: the new files, the index that describes
+    them, and the removal of any file they made redundant — all or nothing.
+    """
     files, stale = {}, []
     for entry, replaced in kept:
         _e, blob = library.file_bytes(entry["id"])
         if blob is not None:
             files[f"qars/library/{entry['file']}"] = blob
-        stale.extend(f"qars/library/{r['file']}" for r in replaced)
-    files["qars/library/index.json"] = library.index_bytes()
-    ok, detail = publish.push(files, f"Add {market} {added} to the report library")
-    if ok and stale:
-        gone_ok, gone_detail = publish.delete(
-            stale, f"Replace {market} {added} in the report library")
-        if not gone_ok:
-            detail += f" (the file it replaced is still in the repo: {gone_detail})"
-    return ok, detail
+        stale.extend(r["file"] for r in replaced)
+    return publish.commit(files, [f"qars/library/{f}" for f in stale],
+                          f"Add {label} to the report library",
+                          merge=_index_merge(stale))
+
+
+def library_files():
+    """Every file the library consists of, keyed by its path in the repository."""
+    files = {}
+    for r in library.summary():
+        e, blob = library.file_bytes(r["id"])
+        if blob is not None:
+            files[f"qars/library/{e['file']}"] = blob
+    files["qars/library/aliases.json"] = library.aliases_bytes()
+    return files
 
 
 def all_raw_names(db):
@@ -755,9 +853,69 @@ def _apply_auto_merge():
     """
     db, s = st.session_state.db, st.session_state.settings
     merged, ambiguous = nz.auto_merge_map(all_raw_names(db), s.get("dev_aliases"))
+    # Decisions somebody made by hand outrank anything worked out here, and
+    # they come from the library so they survive a restart. Re-inserted last,
+    # because the later group wins when two claim the same spelling.
+    for canon, spellings in library.aliases().items():
+        merged[canon] = sorted(set(merged.pop(canon, [])) | set(spellings))
     s["dev_aliases"] = merged
     st.session_state.reports.clear()
     return merged, ambiguous
+
+
+def _decide_names(canonical, spellings, message):
+    """
+    Record that `spellings` are all `canonical`, for good.
+
+    Written into the report library, so the decision outlives the session and
+    reaches everyone — and published when publishing is on, so it outlives the
+    server too. If the library cannot be written, the decision still applies
+    for this session, and the person is told it will not last.
+    """
+    s = st.session_state.settings
+    try:
+        library.set_alias(canonical, spellings)
+        kept = True
+    except library.LibraryError as exc:
+        kept = False
+        groups = dict(s.get("dev_aliases") or {})
+        groups[canonical] = sorted(set(groups.get(canonical, [])) | set(spellings))
+        s["dev_aliases"] = groups
+        flash("warning", f"Applied for this session only — {exc}")
+    _apply_auto_merge()
+    st.session_state.db["library_sig"] = library.signature()
+    persist()
+    refresh_forms()
+    flash("success", message)
+    if kept:
+        _publish_names(message)
+
+
+def _forget_names(canonical, message):
+    s = st.session_state.settings
+    try:
+        library.remove_alias(canonical)
+    except library.LibraryError as exc:
+        flash("warning", f"Undone for this session only — {exc}")
+    groups = dict(s.get("dev_aliases") or {})
+    groups.pop(canonical, None)
+    s["dev_aliases"] = groups
+    _apply_auto_merge()
+    st.session_state.db["library_sig"] = library.signature()
+    persist()
+    refresh_forms()
+    flash("success", message)
+    _publish_names(message)
+
+
+def _publish_names(message):
+    """A name decision is published exactly like a month is."""
+    if not publish.enabled():
+        return
+    ok, detail = publish.commit({"qars/library/aliases.json": library.aliases_bytes()},
+                                message=f"Report library: {message}")
+    if not ok:
+        flash("warning", f"Saved here, but publishing it to GitHub failed: {detail}")
 
 
 def _month_choices(det, periods):
@@ -1572,6 +1730,46 @@ def page_data():
         _dm_maintenance()
 
 
+def _clip(text, n):
+    """Shorten at a word boundary, so a title never ends on half a word."""
+    text = " ".join(str(text or "").split())
+    if len(text) <= n:
+        return text
+    cut = text[:n].rsplit(" ", 1)[0].rstrip(" -–(,;:")
+    return (cut or text[:n]) + "…"
+
+
+def _library_row_note(r, names):
+    """
+    The line under a library file: what replaced it, and what it left out.
+
+    Embedded files never pass through the import review, so this is the one
+    place their uncounted rows and status typos are visible.
+    """
+    bits = []
+    by_file = {}
+    for p, who in sorted((r.get("superseded") or {}).items()):
+        by_file.setdefault(who, []).append(p)
+    for who, ps in by_file.items():
+        bits.append(f"{', '.join(period_text(p) for p in ps)} now comes from "
+                    f"<b>{esc(names.get(who, who))}</b>, so this file no longer counts "
+                    "for " + ("it" if len(ps) == 1 else "them"))
+    notes = r.get("notes") or {}
+    unc = notes.get("uncounted") or []
+    if unc:
+        shown = "; ".join(f"row {u['row']}" + (f" “{esc(_clip(u['title'], 48))}”"
+                                                if u["title"] else "")
+                          + f" — {esc(u['why'])}" for u in unc[:4])
+        bits.append(f"{len(unc)} task row(s) not counted: {shown}"
+                    + ("…" if len(unc) > 4 else ""))
+    for raw, typo in (notes.get("typos") or {}).items():
+        bits.append(f"status “{esc(raw)}” read as {esc(typo['as'])} (row "
+                    f"{', '.join(str(n) for n in typo['rows'][:4])})")
+    if notes.get("unreadable"):
+        bits.append("this file could not be read, so it adds nothing")
+    return " · ".join(bits)
+
+
 def _dm_library():
     """
     The months the app keeps, and how permanent they actually are.
@@ -1610,6 +1808,7 @@ def _dm_library():
     if rows:
         table = ['<table class="qrs-table"><tr><th>Market</th><th>File</th>'
                  '<th>Months</th><th class="num">No.</th><th>Kept</th></tr>']
+        names = {r["id"]: r["source_name"] for r in rows}
         for r in rows:
             span = (f"{period_text(r['first'])} – {period_text(r['last'])}"
                     if r["first"] and r["first"] != r["last"]
@@ -1619,6 +1818,9 @@ def _dm_library():
             table.append(f'<tr><td>{esc(r["market"])}</td>'
                          f'<td>{esc(r["source_name"])}</td><td>{esc(span)}</td>'
                          f'<td class="num">{r["months"]}</td><td>{kind}</td></tr>')
+            note = _library_row_note(r, names)
+            if note:
+                table.append(f'<tr class="qrs-sub"><td></td><td colspan="4">{note}</td></tr>')
         md("".join(table) + "</table>")
     else:
         md('<div class="qrs-info">ℹ️ Nothing kept yet.</div>')
@@ -1631,21 +1833,24 @@ def _dm_library():
                 st.caption(f"Commits every library file to {pub['repo']}@"
                            f"{pub['branch']}. Imports do this on their own; this is "
                            "for a server whose folder is ahead of the repository.")
-                if st.button("⬆  Publish the whole library", type="primary",
+                p1, p2 = st.columns(2)
+                if p1.button("🔌  Check connection", key="lib_check", **WIDE_BTN):
+                    ok, detail = publish.check()
+                    (st.success if ok else st.error)(detail)
+                if p2.button("⬆  Publish the library", type="primary",
                              key="lib_publish", **WIDE_BTN):
-                    files = {}
-                    for r in rows:
-                        e, blob = library.file_bytes(r["id"])
-                        if blob is not None:
-                            files[f"qars/library/{e['file']}"] = blob
-                    files["qars/library/index.json"] = library.index_bytes()
-                    ok, detail = publish.push(files, "Publish the QA report library")
+                    ok, detail = publish.commit(library_files(),
+                                                message="Publish the QA report library",
+                                                merge=_index_merge())
                     (st.success if ok else st.error)(detail)
             else:
-                st.caption("Automatic publishing is off. Add a GitHub token to "
-                           "`.streamlit/secrets.toml` and imports commit themselves:")
-                st.code('[github]\ntoken  = "ghp_…"      # Contents: write\n'
+                st.caption("Automatic publishing is off. Add this to the app's secrets "
+                           "(`.streamlit/secrets.toml` when you run it yourself) and "
+                           "every import commits itself:")
+                st.code('[github]\ntoken  = "github_pat_…"   # Contents: read and write\n'
                         'repo   = "owner/repository"\nbranch = "main"', language="toml")
+                st.caption("On Streamlit Community Cloud: the app's ⋮ menu → Settings → "
+                           "Secrets. Then come back here and press **Check connection**.")
                 st.caption("Or take the manual route: download the pack below, unzip it "
                            "over `qars/library/` in the repository and commit. Same "
                            "result — every future visitor gets these months.")
@@ -1668,6 +1873,7 @@ def _dm_library():
                     st.error(str(exc))
                 else:
                     library.resync(db)
+                    db["library_sig"] = library.signature()
                     _apply_auto_merge()
                     persist()
                     st.session_state.upload_epoch += 1
@@ -1683,8 +1889,16 @@ def _dm_library():
                   f"({r['months']} month(s))": r for r in removable}
         picked = r1.selectbox("File", list(labels), key="lib_rm_pick")
         target = labels[picked]
-        r1.caption("This removes " + ", ".join(period_text(p) for p in target["periods"])
-                   + " from " + target["market"] + ".")
+        lost, restored = library.removal_effect(target["id"])
+        effect = []
+        if lost:
+            effect.append("takes " + ", ".join(period_text(p) for p in lost) + " out of "
+                          + target["market"] + "'s history")
+        for p, src in sorted(restored.items()):
+            effect.append(f"puts {period_text(p)} back from {src}")
+        r1.caption(("Removing it " + " and ".join(effect) + ".") if effect else
+                   "Nothing in the reports comes from this file, so removing it changes "
+                   "no figure.")
         if r2.button("Remove", key="lib_rm_go", **WIDE_BTN):
             try:
                 gone = library.remove(target["id"])
@@ -1692,17 +1906,18 @@ def _dm_library():
                 st.error(str(exc))
             else:
                 library.resync(db)
+                db["library_sig"] = library.signature()
+                _apply_auto_merge()
                 persist()
                 bump_data()
                 msg = f"Removed {gone['source_name']} from the report library."
                 if publish.enabled():
-                    ok, detail = publish.delete([f"qars/library/{gone['file']}",
-                                                 ], f"Remove {gone['source_name']}")
-                    pok, pdetail = publish.push(
-                        {"qars/library/index.json": library.index_bytes()},
-                        f"Remove {gone['source_name']} from the report library")
-                    msg += (" Removed from the repository too." if ok and pok
-                            else f" It is still in the repository: {detail or pdetail}")
+                    ok, detail = publish.commit(
+                        {}, [f"qars/library/{gone['file']}"],
+                        f"Remove {gone['source_name']} from the report library",
+                        merge=_index_merge([gone["file"]]))
+                    msg += (" Removed from the repository too." if ok
+                            else f" It is still in the repository: {detail}")
                 flash("success", msg)
                 st.rerun()
 
@@ -1710,9 +1925,10 @@ def _dm_library():
 def _dm_names():
     db, s = st.session_state.db, st.session_state.settings
     st.caption("Audit sheets and issued reports spell the same person several ways. "
-               "Clear variants are folded together; anything a human would have to "
-               "guess at is flagged for you to decide, because two people can "
-               "genuinely share a first name.")
+               "Clear variants are folded together automatically; anything a person "
+               "would have to judge is flagged here for you to decide, because two "
+               "people can genuinely share a name. Every decision is kept in the "
+               "report library, so you make it once.")
 
     all_raw = sorted(all_raw_names(db))
     aliases = dict(s.get("dev_aliases") or {})
@@ -1729,14 +1945,29 @@ def _dm_names():
     confident, ambiguous = nz.classify_name_groups(all_raw)
     pending = {c: m for c, m in confident.items()
                if len({nz.resolve_name(x, lookup) for x in m}) > 1}
-    still = {c: v for c, v in ambiguous.items()
-             if len({nz.resolve_name(x, lookup) for x in v["members"]}) > 1}
+    decided = library.aliases()
+
+    def settled(info):
+        # Answered when the short name now lands on one of its candidates, or
+        # when someone chose to keep it as its own person.
+        here = nz.resolve_name(info["short"], lookup)
+        rivals = {nz.resolve_name(r, lookup) for r in info["rivals"]}
+        return here in rivals or nz.display_name(info["short"]) in decided
+
+    still = {c: v for c, v in ambiguous.items() if not settled(v)}
+
+    distinct = library.distinct_pairs()
+    similar = [(a, b, score) for a, b, score in nz.similar_people(grouped.keys())
+               if frozenset((a, b)) not in distinct]
 
     if pending:
         md(f'<div class="qrs-note">⚠️ {len(pending)} clear name variant group(s) are not '
            'merged yet.</div>')
-    elif not still:
-        md('<div class="qrs-ok">✅ All clear name variants are already merged.</div>')
+    elif still or similar:
+        md(f'<div class="qrs-note">⚠️ {len(still) + len(similar)} name question(s) need '
+           'your decision below — until then, those people may be counted twice.</div>')
+    else:
+        md('<div class="qrs-ok">✅ Every name is settled.</div>')
 
     left, right = st.columns([1.55, 1.0])
 
@@ -1758,6 +1989,29 @@ def _dm_names():
                 flash("success", "Clear name variants merged.")
                 st.rerun()
 
+        if similar:
+            bar("Possibly the same person", "Spelled differently — never merged automatically")
+            for i, (a, b, score) in enumerate(similar):
+                # The fuller name is the better one to keep.
+                into, other = sorted((a, b), key=lambda n: (-len(n.split()), -len(n)))
+                md(f'<div class="qrs-info">🔎 <b>{esc(other)}</b> and <b>{esc(into)}</b> '
+                   f'look like one person ({int(score * 100)}% alike).</div>')
+                c1, c2, _ = st.columns([1.4, 1.1, 1])
+                if c1.button(f"Count both as {into}", key=f"sim_go_{i}", type="primary",
+                             **WIDE_BTN):
+                    _decide_names(into, [other] + grouped.get(other, []),
+                                  f"{other} now counts as {into}.")
+                    st.rerun()
+                if c2.button("Different people", key=f"sim_no_{i}", **WIDE_BTN):
+                    try:
+                        library.set_distinct(a, b)
+                        st.session_state.db["library_sig"] = library.signature()
+                        _publish_names(f"{a} and {b} are different people")
+                        flash("success", f"Noted: {a} and {b} are different people.")
+                    except library.LibraryError as exc:
+                        flash("warning", str(exc))
+                    st.rerun()
+
         if still:
             bar("Ambiguous", "Needs your decision")
             for canon, info in still.items():
@@ -1767,13 +2021,13 @@ def _dm_names():
                                       ["Leave separate"] + info["rivals"],
                                       key=f"amb_{canon}")
                 if cc2.button("Apply", key=f"ambb_{canon}", **WIDE_BTN):
-                    if pickn != "Leave separate":
-                        host = nz.display_name(pickn)
-                        aliases[host] = sorted(set(aliases.get(host, []))
-                                               | {pickn, info["short"]})
-                        s["dev_aliases"] = aliases
-                        persist()
-                        refresh_forms()
+                    short = info["short"]
+                    if pickn == "Leave separate":
+                        _decide_names(nz.display_name(short), [short],
+                                      f"{nz.display_name(short)} stays a person of their own.")
+                    else:
+                        host = nz.resolve_name(pickn, lookup)
+                        _decide_names(host, [short, pickn], f"{short} now counts as {host}.")
                     st.rerun()
 
     with right:
@@ -1784,27 +2038,25 @@ def _dm_names():
             fold = st.multiselect("Fold these spellings in", all_raw, key="dm_fold")
             if st.button("Apply merge", disabled=not fold, type="primary",
                          key="dm_manual", **WIDE_BTN):
-                aliases[keep_as] = sorted(set(aliases.get(keep_as, [])) | set(fold))
-                s["dev_aliases"] = aliases
-                persist()
-                refresh_forms()
-                flash("success", f"{len(fold)} spelling(s) now count as {keep_as}.")
+                _decide_names(keep_as, fold, f"{len(fold)} spelling(s) now count as {keep_as}.")
                 st.rerun()
 
         bar("Undo a merge")
         with st.container(border=True):
-            if aliases:
-                drop = st.selectbox("Remove grouping for", sorted(aliases.keys()),
-                                    key="dm_drop")
+            # Only decisions made by hand are listed. A merge the app makes on
+            # its own is re-made on the next run, so offering to undo one would
+            # be a button that visibly does nothing; it is overridden instead,
+            # with a manual merge above.
+            if decided:
+                drop = st.selectbox("Remove grouping for", sorted(decided), key="dm_drop")
+                st.caption("Counts " + ", ".join(decided[drop]) + f" as {drop}.")
                 if st.button("Remove grouping", key="dm_undo", **WIDE_BTN):
-                    aliases.pop(drop, None)
-                    s["dev_aliases"] = aliases
-                    persist()
-                    refresh_forms()
-                    flash("success", f"Grouping for {drop} removed.")
+                    _forget_names(drop, f"Grouping for {drop} removed.")
                     st.rerun()
             else:
-                st.caption("No merges defined.")
+                st.caption("No merges made by hand yet. The app's own merges are listed "
+                           "under Current grouping; to change one, merge the spelling "
+                           "into the right person above.")
 
 
 def _dm_periods():
@@ -2118,26 +2370,42 @@ exactly as the audit sheet or the issued deck recorded them.
 
     bar("The report library — why you only upload the newest month")
     st.markdown("""
-A report covering January to September is built from nine months of history,
-and nobody wants to upload nine files every month. So the app keeps them.
+A year-to-date report is built from every month so far, and nobody wants to
+upload all of them again each month. So the app keeps them.
 
 Every sheet you import is written into the **report library** as the file it
-came from, next to the PowerPoint reports that were issued before this tool
-existed. Everything in that folder is loaded at start-up, so:
+came from. The app ships with the history to date already in it: the two
+PowerPoint reports issued for C3 and Japan (January to June 2026) and the audit
+sheets for July, August and September 2026 for all three markets. Everything
+in that folder is loaded at start-up, so:
 
-- import July, and next month you import **only August**;
+- each month you import **only the new month** — one sheet per market;
 - a month already held is **replaced** by a re-import, so a corrected sheet
   does exactly what you expect;
 - everyone using the same server sees the same history — one person's upload
   is everybody's.
 
+**One page takes all three sheets.** A file whose name says its market —
+*October 2026 C3.xlsx* — is filed under that market whichever market is
+selected, and the review step says so before anything is imported.
+
+**Every month comes from exactly one file**: the newest sheet that is *for*
+that month. A sheet is for the month most of its rows are in (or the month you
+chose in the review step), so a few rows mistyped into another month never take
+that month away from its own sheet.
+
 Where a month came from shows on **Data Manager → Report library**: *Shipped
-with the app* for the two decks that came with it, *Imported* for everything
-since. Removing a file there takes its months out of the history; the shipped
-decks stay, because they are part of the application.
+with the app* or *Imported*, with a note under any file that something replaced,
+and any rows a file could not count. Removing an imported file takes its months
+out of the history — or, if it was a correction, puts the original back. The
+shipped files stay, because they are part of the application.
 
 Task-level detail always wins: importing a workbook for a month that only
 existed as a deck replaces the deck's summary with the real rows.
+
+**Name decisions are kept too.** When you tell the app two spellings are one
+person (or two people), that decision is stored in the library next to the
+months, so it is made once and holds for everyone.
 """)
 
     bar("Making months permanent on a hosted server")
@@ -2149,15 +2417,20 @@ rebuilds its disk from the repository every time it restarts. An imported file
 is shared with everyone using the app *right now*, but to outlive a restart it
 has to reach the repository. Two ways:
 
-1. **Automatic.** Put a GitHub token in `.streamlit/secrets.toml` and every
-   import commits itself:
+1. **Automatic** (set up once). Create a GitHub fine-grained token for this
+   repository with *Contents: Read and write*. In Streamlit Community Cloud open
+   the app's **⋮ → Settings → Secrets** and paste:
 
    ```toml
    [github]
-   token  = "ghp_…"          # a token with Contents: write
+   token  = "github_pat_…"
    repo   = "owner/repository"
-   branch = "main"
+   branch = "main"          # the branch the app is deployed from
    ```
+
+   Save, let the app restart, then press **Check connection** on
+   *Data Manager → Report library*. From then on every import is committed to
+   the repository as one commit, and becomes part of the app.
 
 2. **By hand.** *Data Manager → Report library → Download the library pack*,
    unzip it over `qars/library/` in the repository, and commit.

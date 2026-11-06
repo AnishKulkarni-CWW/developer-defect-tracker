@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import inspect
 import io
+import json
 import os
 import shutil
 import sys
@@ -66,13 +67,18 @@ class TempLibrary:
     """
     Point the library at a throwaway folder for the duration of a block.
 
-    `copy_shipped` brings the two vendored decks along, so a test can start
-    from the app's real history and add to it without any chance of writing
-    into the repository.
+      "decks"   — only the two issued decks: the history as it stood before any
+                  workbook was embedded, so a test's own uploads are the only
+                  workbooks in play (the default);
+      "shipped" — everything that ships: decks and embedded workbooks;
+      "empty"   — nothing at all.
+
+    Whatever the mode, nothing can be written into the repository.
     """
 
-    def __init__(self, copy_shipped=True):
-        self.copy_shipped = copy_shipped
+    def __init__(self, mode="decks"):
+        assert mode in ("decks", "shipped", "empty"), mode
+        self.mode = mode
 
     def __enter__(self):
         self.tmp = tempfile.mkdtemp(prefix="qars_lib_")
@@ -80,13 +86,19 @@ class TempLibrary:
         library.DIR = self.tmp
         library.INDEX = os.path.join(self.tmp, "index.json")
         library._CACHE.clear()
-        if self.copy_shipped:
-            for name in os.listdir(SHIPPED_DIR):
-                src = os.path.join(SHIPPED_DIR, name)
-                if os.path.isdir(src):
-                    shutil.copytree(src, os.path.join(self.tmp, name))
-                elif name == "index.json":
-                    shutil.copy2(src, os.path.join(self.tmp, name))
+        if self.mode != "empty":
+            with open(os.path.join(SHIPPED_DIR, "index.json"), encoding="utf-8") as fh:
+                shipped = json.load(fh)["entries"]
+            # Only what shipped: months imported since (October onwards, on a
+            # live app) must not change what these tests expect.
+            keep = [e for e in shipped if e.get("shipped")
+                    and (self.mode == "shipped" or e["kind"] == "deck")]
+            for e in keep:
+                dest = os.path.join(self.tmp, e["file"])
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                shutil.copy2(os.path.join(SHIPPED_DIR, e["file"]), dest)
+            with open(library.INDEX, "w", encoding="utf-8") as fh:
+                json.dump({"entries": keep}, fh, indent=1)
         return self
 
     def __exit__(self, *exc):
@@ -532,36 +544,145 @@ check("Test still classifies as it always did", nz.norm_env("Test") == nz.ENV_IN
 check("Internal is presented as the test link", nz.env_label(nz.ENV_INTERNAL) == "Test link")
 check("External is presented as the live link", nz.env_label(nz.ENV_EXTERNAL) == "Live link")
 
-section("REPORT LIBRARY — what ships with the app")
-check("Both markets have a shipped report", library.markets() == ["C3", "Japan"],
-      str(library.markets()))
-_ship = library.summary()
-check("The shipped entries are marked as such", all(e["shipped"] for e in _ship))
-check("Each covers six months", sorted(e["months"] for e in _ship) == [6, 6],
-      str([e["months"] for e in _ship]))
-check("India ships with no history", not library.periods_for("India"))
+section("REPORT LIBRARY — the real library")
+_REAL_SIG = library.signature()
+_real_shipped = [e for e in library.entries() if e.get("shipped")]
+check("Every file that ships is in the repository",
+      len(_real_shipped) == len(library.SHIPPED) == 11,
+      f"{len(_real_shipped)} of {len(library.SHIPPED)}")
+_code = sorted((e["id"], e["file"], e["kind"], e["source_name"],
+                tuple(e.get("force_month") or ())) for e in library._default_index())
+_disk = sorted((e["id"], e["file"], e["kind"], e["source_name"],
+                tuple(e.get("force_month") or ())) for e in _real_shipped)
+check("The shipped list in the code agrees with index.json", _code == _disk,
+      str(set(_code) ^ set(_disk))[:200])
 check("The library folder is writable here", library.writable())
 
-_bdb = store._empty_db()
-_added = library.seed(_bdb)
-check("Seeding adds six months per market", _added == {"C3": 6, "Japan": 6}, str(_added))
-check("Seeding twice adds nothing", library.seed(_bdb) == {})
-check("Library months are tagged", all(library.is_library(b) for b in _bdb["monthly"]["C3"]))
-check("Shipped months are recognisable",
-      all(library.is_shipped(b) for b in _bdb["monthly"]["C3"]))
-check("Seeding writes no import history", not _bdb["sources"])
+section("REPORT LIBRARY — what ships with the app")
+with TempLibrary("shipped") as _tlx:
+    check("All three markets ship with history", library.markets() == ["C3", "India", "Japan"],
+          str(library.markets()))
+    _ship = library.summary()
+    _decks = [e for e in _ship if e["kind"] == "deck"]
+    _books = [e for e in _ship if e["kind"] == "workbook"]
+    check("Everything in the library shipped with the app", all(e["shipped"] for e in _ship))
+    check("Two issued decks of six months each", sorted(e["months"] for e in _decks) == [6, 6],
+          str([e["months"] for e in _decks]))
+    check("Nine embedded workbooks of one month each",
+          len(_books) == 9 and all(e["months"] == 1 for e in _books),
+          str([(e["file"], e["months"]) for e in _books]))
+    for _m, _want in [("India", [(2026, m) for m in (7, 8, 9)]),
+                      ("C3", [(2026, m) for m in range(1, 10)]),
+                      ("Japan", [(2026, m) for m in range(1, 10)])]:
+        _got = sorted(library.periods_for(_m))
+        check(f"{_m} ships with {len(_want)} months, "
+              f"{library.ingest.month_label(_want[0])} to {library.ingest.month_label(_want[-1])}",
+              _got == _want, str(_got))
+    check("No shipped month falls outside 2026 — the 1975 typos are filed correctly",
+          all(p[0] == 2026 for e in _ship for p in e["periods"]))
+    _by_file = {e["file"]: e for e in library.entries()}
+    check("C3's September sheet is filed under September 2026",
+          _by_file["C3/2026-09_September_2026_C3.xlsx"].get("force_month") == [2026, 9])
+    check("Japan's July sheet is filed under July 2026",
+          _by_file["Japan/2026-07_July_2026_Japan.xlsx"].get("force_month") == [2026, 7])
+    check("Each workbook supplies exactly the month it is for",
+          all(e["used"] == [e["primary"]] for e in _books),
+          str([(e["file"], e["used"], e["primary"]) for e in _books
+               if e["used"] != [e["primary"]]]))
+    check("No shipped workbook is superseded", all(not e["superseded"] for e in _books))
+    _claims = {}
+    for e in _ship:
+        for p in e["used"]:
+            _claims.setdefault((e["market"], p), []).append(e["file"])
+    check("Every month of every market comes from exactly one file",
+          all(len(v) == 1 for v in _claims.values()) and len(_claims) == 3 + 9 + 9,
+          str({k: v for k, v in _claims.items() if len(v) != 1}))
+    _bdb = store._empty_db()
+    _added = library.seed(_bdb)
+    check("Seeding adds every shipped month", _added == {"C3": 9, "Japan": 9, "India": 3},
+          str(_added))
+    check("Seeding twice adds nothing", library.seed(_bdb) == {})
+    check("Library months are tagged",
+          all(library.is_library(b) for b in _bdb["monthly"]["C3"])
+          and all(library.is_library(r) for m in store.MARKETS for r in _bdb["tasks"][m]))
+    check("Shipped months are recognisable",
+          all(library.is_shipped(b) for b in _bdb["monthly"]["C3"]))
+    check("Seeding writes no import history", not _bdb["sources"])
 
-_bs = _lib_settings(_bdb)
-_bt = metrics.totals(metrics.select(_bdb, "C3", _bs, {}))
-for label, got, want in [("total tasks", _bt["total_tasks"], 641),
-                         ("error-free tasks", _bt["error_free"], 598),
-                         ("defects", _bt["error_tasks"], 43),
-                         ("test-link defects", _bt["internal"], 37),
-                         ("live-link defects", _bt["external"], 6),
-                         ("observations", _bt["observations"], 38)]:
-    check(f"Shipped C3 reproduces the published {label}", got == want, f"{got} vs {want}")
-check("Shipped C3 reproduces the published quality score", _bt["score"] == 93.29,
-      metrics.fmt_score(_bt["score"]))
+    section("REPORT LIBRARY — the issued figures are reproduced exactly")
+    _bs = _lib_settings(_bdb)
+    _half = [(2026, m) for m in range(1, 7)]
+    _bt = metrics.totals(metrics.select(_bdb, "C3", _bs, {"periods": _half}))
+    for label, got, want in [("total tasks", _bt["total_tasks"], 641),
+                             ("error-free tasks", _bt["error_free"], 598),
+                             ("defects", _bt["error_tasks"], 43),
+                             ("test-link defects", _bt["internal"], 37),
+                             ("live-link defects", _bt["external"], 6),
+                             ("observations", _bt["observations"], 38)]:
+        check(f"C3 January–June reproduces the published {label}", got == want,
+              f"{got} vs {want}")
+    check("C3 January–June reproduces the published quality score", _bt["score"] == 93.29,
+          metrics.fmt_score(_bt["score"]))
+
+    section("REPORT LIBRARY — July to September, exactly as the sheets have them")
+    # Counted by hand from the workbooks, row by row, independently of this app.
+    # (market, month): tasks, defects, observations, test-link, live-link, score
+    _EMBEDDED = {
+        ("India", 7): (176, 10, 1, 10, 0, 94.32),
+        ("India", 8): (93, 9, 3, 9, 0, 90.32),
+        ("India", 9): (154, 7, 4, 6, 1, 95.45),
+        ("C3", 7): (111, 9, 8, 9, 0, 91.89),
+        ("C3", 8): (137, 9, 12, 8, 1, 93.43),
+        ("C3", 9): (91, 5, 11, 5, 0, 94.51),
+        ("Japan", 7): (69, 5, 0, 3, 2, 92.75),
+        ("Japan", 8): (64, 9, 2, 9, 0, 85.94),
+        ("Japan", 9): (72, 4, 3, 4, 0, 94.44),
+    }
+    for (_m, _mo), want in _EMBEDDED.items():
+        _t = metrics.totals(metrics.select(_bdb, _m, _bs, {"periods": [(2026, _mo)]}))
+        got = (_t["total_tasks"], _t["error_tasks"], _t["observations"], _t["internal"],
+               _t["external"], _t["score"])
+        check(f"{_m} {library.ingest.month_label((2026, _mo))}: {want[0]} tasks, "
+              f"{want[1]} defects, {metrics.fmt_score(want[5])}", got == want, str(got))
+    for _m, want in [("India", (3, 423, 26, 93.85)), ("C3", (9, 980, 66, 93.27)),
+                     ("Japan", (9, 656, 25, 96.19))]:
+        _t = _lib_totals(_bdb, _m)
+        got = (_t["months"], _t["total_tasks"], _t["error_tasks"], _t["score"])
+        check(f"{_m}'s whole history: {want[0]} months, {want[1]} tasks, "
+              f"{metrics.fmt_score(want[3])}", got == want, str(got))
+    _t = _lib_totals(_bdb, "C3")
+    check("C3's report runs January to September", _t["period_label"] == "Jan – Sep 2026",
+          _t["period_label"])
+    _isep = library.reading_notes(_by_file["India/2026-09_September_2026_India.xlsx"])
+    check("India September names the task it cannot count, and why",
+          {(u["row"], u["why"]) for u in _isep.get("uncounted", [])}
+          == {(111, "no Status"), (140, "no Developer Name")},
+          str(_isep.get("uncounted")))
+    _jsep = library.reading_notes(_by_file["Japan/2026-09_September_2026_Japan.xlsx"])
+    check("Japan September counts its 'Psas' task as the pass it is",
+          _jsep.get("typos") == {"Psas": {"as": nz.STATUS_OK, "rows": [3]}},
+          str(_jsep.get("typos")))
+    check("Every other embedded sheet reads cleanly",
+          all(not library.reading_notes(e).get("typos") for e in library.entries()
+              if e["kind"] == "workbook"
+              and e["file"] != "Japan/2026-09_September_2026_Japan.xlsx"))
+
+section("REPORT LIBRARY — a damaged index costs nothing")
+with TempLibrary("shipped") as _tl0:
+    with open(library.INDEX, "w", encoding="utf-8") as _fh:
+        _fh.write("<<<<<<< HEAD\n{ not json")
+    _ddb = store._empty_db()
+    library.resync(_ddb)
+    for _m, want in [("India", (3, 423)), ("C3", (9, 980)), ("Japan", (9, 656))]:
+        _t = _lib_totals(_ddb, _m)
+        check(f"With index.json unreadable, {_m} still has every month and task",
+              (_t["months"], _t["total_tasks"]) == want,
+              f"{_t['months']} / {_t['total_tasks']}")
+    check("And the corrected months stay corrected",
+          all(r["year"] == 2026 for m in store.MARKETS for r in _ddb["tasks"][m]))
+    os.remove(library.INDEX)
+    check("With no index.json at all, every shipped file is still listed",
+          len(library.entries()) == 11, str(len(library.entries())))
 
 section("REPORT LIBRARY — a month imported once is kept for good")
 with TempLibrary() as _tl:
@@ -663,7 +784,7 @@ with TempLibrary() as _tl:
     _pack_months = _lib_totals(_pack_db, "C3")["months"]
     _pack_tasks = _lib_totals(_pack_db, "C3")["total_tasks"]
 
-with TempLibrary(copy_shipped=False) as _tl2:
+with TempLibrary("empty") as _tl2:
     check("An empty library has nothing", library.summary() == [])
     _n = library.restore_pack(_pack)
     check("Restoring a pack brings every file back", _n >= 3, f"{_n} files")
@@ -683,10 +804,224 @@ with TempLibrary(copy_shipped=False) as _tl2:
         except library.LibraryError:
             check(f"Restore rejects {label}", True)
 
-check("The real library is untouched by all of that",
-      library.DIR == SHIPPED_DIR and [e["source_name"] for e in library.summary()]
-      == ["C3_Quality_Defect_Report_2026.pptx", "Japan_Quality_Defect_Report_2026.pptx"],
-      str([e["source_name"] for e in library.summary()]))
+check("The real library is untouched by all of that", library.DIR == SHIPPED_DIR
+      and library.signature() == _REAL_SIG)
+
+def _mixed(parts, dev="Dev Mix"):
+    """A sheet whose rows fall in several months: [(year, month, n), ...]."""
+    lines = ["Mail Title,Date,Test Environment,Developer Name,Status,Error Type,"
+             "Error Severity"]
+    k = 0
+    for year, month, n in parts:
+        for i in range(n):
+            k += 1
+            lines.append(f"Task {k},{year}-{month:02d}-{(i % 27) + 1:02d},Test,{dev},"
+                         "First Time Correct,,")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def _month_tasks(db, market, period):
+    return sum(1 for r in db["tasks"][market] if (r["year"], r["month"]) == period)
+
+
+section("OWNERSHIP — a stray row never steals another month")
+with TempLibrary() as _tlo:
+    _sep, _ = library.add("C3", "C3 September.csv", _workbook(2026, 9, 150))
+    # October's sheet, with three rows mistyped as September.
+    _oct, _gone = library.add("C3", "C3 October.csv", _mixed([(2026, 10, 100), (2026, 9, 3)]))
+    check("October's sheet is filed as October's", _oct["primary"] == "2026-10",
+          _oct["primary"])
+    check("September's file is not deleted by October's", _gone == []
+          and os.path.exists(os.path.join(library.DIR, _sep["file"])),
+          str([g["file"] for g in _gone]))
+    _odb = store._empty_db()
+    library.resync(_odb)
+    check("September still counts its own 150 rows, not October's 3",
+          _month_tasks(_odb, "C3", (2026, 9)) == 150, str(_month_tasks(_odb, "C3", (2026, 9))))
+    check("October counts its 100", _month_tasks(_odb, "C3", (2026, 10)) == 100)
+    _own = library.ownership("C3")
+    check("Each month has exactly one owner",
+          _own[("C3", (2026, 9))] == _sep["id"] and _own[("C3", (2026, 10))] == _oct["id"])
+
+    section("OWNERSHIP — a sheet spanning two months")
+    _nd, _ = library.add("C3", "C3 Nov-Dec.csv", _mixed([(2026, 11, 80), (2026, 12, 40)]))
+    library.resync(_odb)
+    check("It supplies both months while nothing else covers them",
+          (_month_tasks(_odb, "C3", (2026, 11)), _month_tasks(_odb, "C3", (2026, 12)))
+          == (80, 40))
+    _dec, _gone = library.add("C3", "C3 December.csv", _workbook(2026, 12, 60))
+    library.resync(_odb)
+    check("A dedicated December sheet takes December over",
+          _month_tasks(_odb, "C3", (2026, 12)) == 60, str(_month_tasks(_odb, "C3", (2026, 12))))
+    check("The two-month sheet keeps November, and is kept",
+          _month_tasks(_odb, "C3", (2026, 11)) == 80 and _gone == []
+          and os.path.exists(os.path.join(library.DIR, _nd["file"])))
+    _row = next(e for e in library.summary() if e["id"] == _nd["id"])
+    check("The library says which month moved, and to which file",
+          _row["used"] == [(2026, 11)] and _row["superseded"] == {(2026, 12): _dec["id"]},
+          f"{_row['used']} / {_row['superseded']}")
+    _lost, _back = library.removal_effect(_dec["id"])
+    check("Removing December's sheet is seen to bring the two-month sheet back",
+          _lost == [] and _back == {(2026, 12): "C3 Nov-Dec.csv"}, f"{_lost} / {_back}")
+    library.remove(_dec["id"])
+    library.resync(_odb)
+    check("And it does", _month_tasks(_odb, "C3", (2026, 12)) == 40)
+    _lost, _back = library.removal_effect(_oct["id"])
+    check("Removing a month nobody else has is seen to lose it",
+          _lost == [(2026, 10)] and _back == {}, f"{_lost} / {_back}")
+
+    section("OWNERSHIP — three markets uploaded in the same second")
+    _stamps = [library.add(m, f"{m} January 2027.csv", _workbook(2027, 1, 10))[0]["added"]
+               for m in ("C3", "India", "Japan")]
+    _all = [e["added"] for e in library.entries() if e["kind"] == "workbook"]
+    check("Every import gets a later stamp than the one before",
+          _stamps == sorted(_stamps) and len(set(_all)) == len(_all), str(_stamps))
+
+section("OWNERSHIP — a corrected upload over a shipped month")
+with TempLibrary("shipped") as _tls:
+    _jul, _gone = library.add("India", "July 2026 India corrected.csv",
+                              _workbook(2026, 7, 180, dev="Dev Fix"))
+    check("The shipped July file is never deleted", _gone == [] and os.path.exists(
+        os.path.join(library.DIR, "India/2026-07_July_2026_India.xlsx")))
+    _sdb = store._empty_db()
+    library.resync(_sdb)
+    check("July counts the correction only — not both files",
+          _month_tasks(_sdb, "India", (2026, 7)) == 180,
+          str(_month_tasks(_sdb, "India", (2026, 7))))
+    check("August and September are untouched",
+          (_month_tasks(_sdb, "India", (2026, 8)), _month_tasks(_sdb, "India", (2026, 9)))
+          == (93, 154))
+    _orig = next(e for e in library.summary()
+                 if e["file"] == "2026-07_July_2026_India.xlsx")
+    check("The shipped file is shown as replaced, by the correction",
+          _orig["used"] == [] and _orig["superseded"] == {(2026, 7): _jul["id"]},
+          f"{_orig['used']} / {_orig['superseded']}")
+    _lost, _back = library.removal_effect(_jul["id"])
+    check("Undoing the correction is seen to bring the shipped July back",
+          _lost == [] and _back == {(2026, 7): "July 2026 India.xlsx"}, f"{_back}")
+    library.remove(_jul["id"])
+    library.resync(_sdb)
+    check("And removing it does", _month_tasks(_sdb, "India", (2026, 7)) == 176)
+
+    section("OWNERSHIP — this session's own rows win for this session")
+    _own_rows, _ = ingest.read_excel(_workbook(2026, 10, 30, dev="Dev Session"), "Japan",
+                                     filename="session.csv")
+    _wdb = store._empty_db()
+    _wdb["tasks"]["Japan"] = list(_own_rows)
+    library.add("Japan", "October 2026 Japan.csv", _workbook(2026, 10, 70))
+    library.resync(_wdb)
+    check("A month the session imported itself is not counted twice",
+          _month_tasks(_wdb, "Japan", (2026, 10)) == 30,
+          str(_month_tasks(_wdb, "Japan", (2026, 10))))
+    check("The library still supplies every other month",
+          _lib_totals(_wdb, "Japan")["months"] == 10)
+
+section("SIGNATURE — a running session notices the library changed")
+with TempLibrary() as _tlg:
+    _s0 = library.signature()
+    check("It is stable while nothing changes", library.signature() == _s0)
+    _e, _ = library.add("India", "India March.csv", _workbook(2026, 3, 20))
+    _s1 = library.signature()
+    check("It changes when a file is added", _s1 != _s0)
+    library.remove(_e["id"])
+    check("And returns when the file is removed again", library.signature() == _s0)
+    library.set_alias("Dev Lib", ["Dev Library"])
+    check("It changes when a name decision is made", library.signature() != _s0)
+
+section("NAMES — the same person, however the sheet spells them")
+check("An agency in brackets is not part of the name",
+      nz.display_name("Dan Dsouza (Omnicom)") == "Dan Dsouza",
+      nz.display_name("Dan Dsouza (Omnicom)"))
+check("Nor in square brackets", nz.display_name("Dan Dsouza [Agency]") == "Dan Dsouza")
+check("So both spellings are one key",
+      nz.name_key("Dan Dsouza (Omnicom)") == nz.name_key("dan dsouza"))
+check("A dot between names reads as a space", nz.display_name("Dan.Dsouza") == "Dan Dsouza",
+      nz.display_name("Dan.Dsouza"))
+_chain = nz.build_alias_lookup({"Dipalee Dugaonkar": ["Dipalee"],
+                                "Dipali Tanaji Dugaokar": ["Dipalee Dugaonkar"]})
+check("A merge of a merge lands on the final name",
+      _chain[nz.name_key("Dipalee")] == "Dipali Tanaji Dugaokar",
+      _chain[nz.name_key("Dipalee")])
+_sim = {frozenset(p[:2]) for p in nz.similar_people(
+    ["Dipalee Dugaonkar", "Dipali Tanaji Dugaokar", "Mithesh Gupta",
+     "Mitesh Umashankar Gupta", "Sarika Joshi", "Sarika Rupesh Joshte", "Neha Lal",
+     "Neha Gupta", "Mitesh Salunkhe", "Amol", "Amol Dohale"])}
+for a, b in [("Dipalee Dugaonkar", "Dipali Tanaji Dugaokar"),
+             ("Mithesh Gupta", "Mitesh Umashankar Gupta"),
+             ("Sarika Joshi", "Sarika Rupesh Joshte")]:
+    check(f"'{a}' and '{b}' are suggested as one person", frozenset((a, b)) in _sim)
+for a, b in [("Neha Lal", "Neha Gupta"), ("Mitesh Salunkhe", "Mitesh Umashankar Gupta"),
+             ("Mitesh Salunkhe", "Mithesh Gupta"), ("Amol", "Amol Dohale")]:
+    check(f"'{a}' and '{b}' are never suggested", frozenset((a, b)) not in _sim)
+
+section("NAMES — a decision is kept with the history")
+with TempLibrary() as _tln:
+    check("No decisions to begin with", library.aliases() == {}
+          and library.distinct_pairs() == set())
+    library.set_alias("Mitesh Umashankar Gupta", ["Mithesh Gupta", "mitesh"])
+    check("A merge is written next to the files",
+          os.path.exists(os.path.join(library.DIR, "aliases.json")))
+    library._CACHE.clear()
+    check("And read back by the next session",
+          library.aliases() == {"Mitesh Umashankar Gupta": ["Mithesh Gupta", "mitesh"]},
+          str(library.aliases()))
+    library.set_alias("Mitesh Salunkhe", ["mitesh"])
+    check("A spelling moved to another person leaves the first",
+          library.aliases() == {"Mitesh Umashankar Gupta": ["Mithesh Gupta"],
+                                "Mitesh Salunkhe": ["mitesh"]}, str(library.aliases()))
+    library.set_distinct("Neha Lal", "Neha Gupta")
+    check("'Two different people' is remembered",
+          frozenset(("Neha Lal", "Neha Gupta")) in library.distinct_pairs())
+    check("Forgetting a merge works", library.remove_alias("Mitesh Salunkhe")
+          and "Mitesh Salunkhe" not in library.aliases())
+    check("Forgetting one that is not there says so",
+          library.remove_alias("Nobody At All") is False)
+    _npack = library.export_pack()
+with TempLibrary("empty") as _tln2:
+    library.restore_pack(_npack)
+    check("A library pack carries the name decisions with it",
+          library.aliases() == {"Mitesh Umashankar Gupta": ["Mithesh Gupta"]}
+          and frozenset(("Neha Lal", "Neha Gupta")) in library.distinct_pairs(),
+          str(library.aliases()))
+
+section("STATUS — a typo is read as the status it plainly is")
+for raw, want in [("Psas", nz.STATUS_OK), ("Paas", nz.STATUS_OK), ("Eror", nz.STATUS_ERR),
+                  ("Erorr", nz.STATUS_ERR), ("Obsevation", nz.STATUS_OBS),
+                  ("No eror", nz.STATUS_OK), ("Corect", nz.STATUS_OK)]:
+    check(f"'{raw}' reads as {want}, flagged as a typo", nz.read_status(raw) == (want, True),
+          str(nz.read_status(raw)))
+for raw in ["Pass", "Error", "Observation", "First Time Correct"]:
+    check(f"'{raw}' is not a typo", nz.read_status(raw)[1] is False)
+for raw, want in [("Obs.", nz.STATUS_OBS), ("FTC.", nz.STATUS_OK), ("OK!", nz.STATUS_OK)]:
+    check(f"'{raw}' is read through its punctuation", nz.read_status(raw) == (want, False),
+          str(nz.read_status(raw)))
+for raw in ["Hold", "Pending", "N/A", "NA", "WIP", "Pas", "Cancelled", "Not tested",
+            "Retest", "Done", "Rejected", "etc", ""]:
+    check(f"'{raw}' is not guessed at", nz.read_status(raw) == (None, False),
+          str(nz.read_status(raw)))
+_typo_csv = ("Mail Title,Date,Test Environment,Developer Name,Status\n"
+             "One,2026-10-01,Test,Dev A,Pass\nTwo,2026-10-02,Test,Dev A,Psas\n"
+             "Three,2026-10-03,Test,,Pass\nFour,2026-10-04,Test,Dev B,\n"
+             ",,,,\n,,Test,,\n").encode()
+_trows, _trep = ingest.read_excel(_typo_csv, "India", filename="typo.csv")
+check("The typo row is counted", len(_trows) == 2, str(len(_trows)))
+check("The import says what it assumed",
+      _trep["status_typos"] == {"Psas": {"as": nz.STATUS_OK, "rows": [3]}},
+      str(_trep["status_typos"]))
+check("And names each task it could not count",
+      [(u["row"], u["why"]) for u in _trep["uncounted_tasks"]]
+      == [(4, "no Developer Name"), (5, "no Status")], str(_trep["uncounted_tasks"]))
+
+section("ROUTING — the file name says which market a sheet is for")
+for name, want in [("October 2026 India.xlsx", "India"), ("C3_Oct_2026.xlsx", "C3"),
+                   ("October 2026 Japan.xlsx", "Japan"), ("JP October.xlsx", "Japan"),
+                   ("Copy of Copy of August 2026 C3 QA Audit.xlsx", "C3"),
+                   ("india-nov.csv", "India"), ("October 2026.xlsx", None),
+                   ("India and Japan.xlsx", None), ("Indiana report.xlsx", None),
+                   ("C30 summary.xlsx", None), ("", None)]:
+    check(f"'{name}' goes to {want or 'the selected market'}",
+          ingest.market_from_filename(name, store.MARKETS) == want,
+          str(ingest.market_from_filename(name, store.MARKETS)))
 
 section("PUBLISHING — off unless it is switched on")
 publish.configure(token="", repo="")
@@ -702,6 +1037,173 @@ check("Configuring turns it on", _st == {"enabled": True, "repo": "owner/repo",
                                          "branch": "trunk", "has_token": True}, str(_st))
 publish.configure(token="", repo="")
 check("And it can be turned back off", publish.enabled() is False)
+
+section("PUBLISHING — against a stand-in for GitHub")
+from fake_github import FakeGitHub                                # noqa: E402
+_gh = FakeGitHub(files={"README.md": b"hello", "qars/library/index.json": b"{}"}).start()
+_saved_api = publish.API
+publish.API = _gh.url
+try:
+    publish.configure(token="good-token", repo="owner/repo", branch="main")
+    _ok, _detail = publish.check()
+    check("A working token is confirmed", _ok and "Connected to owner/repo on main" in _detail,
+          _detail[:60])
+    check("Checking changes nothing anyone can see", len(_gh.history()) == 1
+          and not any(m == "PATCH" or p.endswith(("/git/trees", "/git/commits"))
+                      for m, p in _gh.calls))
+    for label, kw, words in [
+            ("a wrong token", {"token": "expired"}, "did not accept the token"),
+            ("a wrong repository", {"repo": "owner/other"}, "could not find owner/other"),
+            ("a wrong branch", {"branch": "deploy"}, "on branch deploy")]:
+        publish.configure(**{"token": "good-token", "repo": "owner/repo", "branch": "main",
+                             **kw})
+        _ok, _detail = publish.check()
+        check(f"The check names {label} as the problem", not _ok and words in _detail,
+              _detail[:70])
+    publish.configure(token="good-token", repo="owner/repo", branch="main")
+    _gh.push = _gh.account_push = False
+    _ok, _detail = publish.check()
+    check("A read-only token is caught before anything depends on it",
+          not _ok and "not write" in _detail, _detail[:70])
+    _gh.account_push = True
+    _ok, _detail = publish.check()
+    check("Even when the account itself may write — only the token is read-only",
+          not _ok and "not write" in _detail, _detail[:70])
+    _ok, _detail = publish.commit({"qars/library/x.csv": b"1"}, (), "msg")
+    check("And a write with it fails politely, changing nothing",
+          not _ok and "Contents: read and write" in _detail and len(_gh.history()) == 1,
+          _detail[:70])
+    _gh.push = _gh.account_push = True
+
+    _wb, _ix = b"Mail Title,Date\nA,2026-10-01\n", b'{"entries": ["october"]}'
+    _ok, _detail = publish.commit({"qars/library/C3/2026-10_C3.csv": _wb,
+                                   "qars/library/index.json": _ix}, (), "Add C3 October")
+    _files = _gh.files()
+    check("An import lands as ONE commit", _ok and len(_gh.history()) == 2, _detail)
+    check("Carrying the workbook and the index together",
+          _files.get("qars/library/C3/2026-10_C3.csv") == _wb
+          and _files.get("qars/library/index.json") == _ix)
+    check("Under the message it was given", _gh.history()[0] == "Add C3 October")
+    check("Leaving the rest of the repository alone", _files.get("README.md") == b"hello")
+    _ok, _detail = publish.commit({"qars/library/C3/2026-10_C3.csv": _wb,
+                                   "qars/library/index.json": _ix}, (), "Again")
+    check("Publishing the same files again makes no empty commit",
+          _ok and len(_gh.history()) == 2 and "already has" in _detail, _detail)
+    _up = _gh.blob_uploads()
+    _ok, _ = publish.commit({"qars/library/C3/2026-10_C3.csv": _wb,
+                             "qars/library/index.json": b'{"entries": []}'}, (), "Index only")
+    check("Only the file that changed is uploaded", _ok and _gh.blob_uploads() - _up == 1,
+          str(_gh.blob_uploads() - _up))
+    _ok, _detail = publish.delete(["qars/library/C3/2026-10_C3.csv"], "Remove C3 October")
+    check("A removal is one commit too", _ok and "qars/library/C3/2026-10_C3.csv"
+          not in _gh.files() and _gh.history()[0] == "Remove C3 October", _detail)
+    _n = len(_gh.history())
+    _ok, _ = publish.delete(["qars/library/never-there.csv"], "Remove nothing")
+    check("Removing a file the repository does not have makes no commit",
+          _ok and len(_gh.history()) == _n)
+
+    _gh.on_patch = lambda: _gh.commit_elsewhere({"notes.txt": b"theirs"})
+    _ok, _detail = publish.commit({"qars/library/Japan/2026-10_Japan.csv": b"jp"}, (),
+                                  "Add Japan October")
+    _files = _gh.files()
+    check("If someone commits first, the import is rebuilt on top of theirs",
+          _ok and _files.get("qars/library/Japan/2026-10_Japan.csv") == b"jp", _detail)
+    check("Without losing their commit", _files.get("notes.txt") == b"theirs"
+          and _gh.history()[:2] == ["Add Japan October", "Someone else's commit"],
+          str(_gh.history()[:2]))
+    _gh.fail_patch = 99
+    _ok, _detail = publish.commit({"qars/library/India/x.csv": b"in"}, (), "msg")
+    check("A branch that never settles gives up with a clear message",
+          not _ok and "moved while publishing" in _detail, _detail[:60])
+    _gh.fail_patch = 0
+
+    section("PUBLISHING — the index is merged with the repository's, never written over")
+    with TempLibrary() as _tlm:
+        _other = {"id": "India-2026-10_x.csv", "market": "India",
+                  "file": "India/2026-10_x.csv", "kind": "workbook", "shipped": False,
+                  "periods": ["2026-10"], "primary": "2026-10",
+                  "added": "2026-11-01T10:00:00", "source_name": "x.csv"}
+        _theirs = json.dumps({"entries": [_other]}).encode()
+        _m = json.loads(library.merged_index_bytes(_theirs))["entries"]
+        check("An entry only the repository has is kept",
+              [e["file"] for e in _m] == [e["file"] for e in library.entries()]
+              + ["India/2026-10_x.csv"], str([e["file"] for e in _m]))
+        _m = json.loads(library.merged_index_bytes(_theirs, ["India/2026-10_x.csv"]))
+        check("Unless this very change removes its file",
+              all(e["file"] != "India/2026-10_x.csv" for e in _m["entries"]))
+        for label, remote in [("no", None), ("an unreadable", b"<<<<<<< HEAD\n{")]:
+            _m = json.loads(library.merged_index_bytes(remote))["entries"]
+            check(f"With {label} repository index, this library's own is used",
+                  [e["file"] for e in _m] == [e["file"] for e in library.entries()])
+        _gm = FakeGitHub(files={"qars/library/index.json": _theirs,
+                                "qars/library/India/2026-10_x.csv": b"x"}).start()
+        publish.API = _gm.url
+        _e, _ = library.add("C3", "October 2026 C3.csv", _workbook(2026, 10, 30))
+        _late = dict(_other, id="Japan-2026-10_y.csv", market="Japan",
+                     file="Japan/2026-10_y.csv", source_name="y.csv")
+        # Someone else's commit lands while this one is being made.
+        _gm.on_patch = lambda: _gm.commit_elsewhere({
+            "qars/library/index.json": json.dumps({"entries": [_other, _late]}).encode(),
+            "qars/library/Japan/2026-10_y.csv": b"y"})
+        _ok, _detail = publish.commit(
+            {f"qars/library/{_e['file']}": library.file_bytes(_e["id"])[1]}, (),
+            "Add C3 October", merge={"qars/library/index.json":
+                                     lambda remote: library.merged_index_bytes(remote)})
+        _final = {e["file"] for e in json.loads(
+            _gm.files()["qars/library/index.json"])["entries"]}
+        check("Publishing over a newer repository keeps every month it holds",
+              _ok and {"India/2026-10_x.csv", "Japan/2026-10_y.csv", _e["file"]} <= _final,
+              str(sorted(_final)))
+        _gm.stop()
+        publish.API = _gh.url
+
+    section("PUBLISHING — an upload survives a restart because it is in the repository")
+    with TempLibrary() as _tlp:
+        _seed_files = {}
+        for _root, _dirs, _names in os.walk(library.DIR):
+            for _nm in _names:
+                _full = os.path.join(_root, _nm)
+                _rel = os.path.relpath(_full, library.DIR).replace(os.sep, "/")
+                with open(_full, "rb") as _fh:
+                    _seed_files[f"qars/library/{_rel}"] = _fh.read()
+        _repo = FakeGitHub(files=_seed_files).start()
+        publish.API = _repo.url
+        _entry, _ = library.add("C3", "October 2026 C3.csv", _workbook(2026, 10, 75))
+        _wbytes = library.file_bytes(_entry["id"])[1]
+        _ok, _detail = publish.commit({f"qars/library/{_entry['file']}": _wbytes,
+                                       "qars/library/index.json": library.index_bytes()},
+                                      (), "Add October 2026 C3.csv to the report library")
+        check("The import is committed", _ok, _detail)
+        _repo.stop()
+    # The server restarts: its disk is rebuilt from the repository, nothing else.
+    with TempLibrary("empty") as _tlr:
+        for _path, _data in _repo.files().items():
+            if _path.startswith("qars/library/"):
+                _dest = os.path.join(library.DIR, _path[len("qars/library/"):])
+                os.makedirs(os.path.dirname(_dest), exist_ok=True)
+                with open(_dest, "wb") as _fh:
+                    _fh.write(_data)
+        _rdb = store._empty_db()
+        library.resync(_rdb)
+        _rt = _lib_totals(_rdb, "C3")
+        check("A server rebuilt from the repository has October",
+              _rt["months"] == 7 and _rt["period_label"] == "Jan – Oct 2026",
+              f"{_rt['months']} months, {_rt['period_label']}")
+        check("With October's rows counted", _rt["total_tasks"] == 641 + 75,
+              str(_rt["total_tasks"]))
+finally:
+    publish.API = _saved_api
+    publish.configure(token="", repo="")
+    _gh.stop()
+
+publish.API = "http://127.0.0.1:9"          # nothing listens there
+publish.configure(token="t", repo="o/r")
+_ok, _detail = publish.check()
+check("No connection is reported as such", not _ok and "Could not reach GitHub" in _detail,
+      _detail[:60])
+publish.API = _saved_api
+publish.configure(token="", repo="")
+
 
 section("SINGLE MONTH — no consolidated section")
 _multi = metrics.select(_db_with("India", tasks=tasks), "India", _settings(), {})

@@ -41,18 +41,74 @@ _STATUS_MAP = {
 
 
 def norm_status(value):
+    return read_status(value)[0]
+
+
+def read_status(value):
+    """
+    (status, was_a_typo) for one Status cell.
+
+    `was_a_typo` is True when the cell matched no known word and was read as
+    the one status it is a slip away from — 'Psas' is Pass, 'Eror' is Error.
+    Without this, a single mistyped cell silently drops a real task from every
+    total; with it, the import says exactly what it assumed.
+    """
     key = _clean(value).lower()
     if not key:
-        return None
+        return None, False
     if key in _STATUS_MAP:
-        return _STATUS_MAP[key]
+        return _STATUS_MAP[key], False
     if "observ" in key:
-        return STATUS_OBS
+        return STATUS_OBS, False
     if "error" in key or "fail" in key or "defect" in key:
-        return STATUS_ERR
+        return STATUS_ERR, False
     if "correct" in key or "pass" in key:
-        return STATUS_OK
-    return None
+        return STATUS_OK, False
+    bare = re.sub(r"[^a-z ]+", "", key).strip()      # "Obs.", "FTC." and "OK!"
+    if bare in _STATUS_MAP:
+        return _STATUS_MAP[bare], False
+    guess = _near_status(key)
+    return guess, guess is not None
+
+
+def _edits(a, b):
+    """Edit distance where swapping two neighbouring letters counts as one."""
+    prev2, prev = None, list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        cur = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if (prev2 is not None and i > 1 and j > 1 and a[i - 1] == b[j - 2]
+                    and a[i - 2] == b[j - 1]):
+                cur[j] = min(cur[j], prev2[j - 2] + 1)
+        prev2, prev = prev, cur
+    return prev[len(b)]
+
+
+def _near_status(key):
+    """
+    The status a typo was meant to be, or None when that is not clear.
+
+    Deliberately narrow: words of four letters or more, one slip (two for long
+    words), and only when a single status is that close. 'Hold', 'Pending' or
+    'N/A' are nowhere near a status and stay unread.
+    """
+    word = re.sub(r"[^a-z ]+", "", key).strip()
+    if len(word) < 4:
+        return None
+    limit = 1 if len(word) <= 7 else 2
+    hits = {}
+    for known, status in _STATUS_MAP.items():
+        if len(known) < 4:
+            continue
+        d = _edits(word, known)
+        if d <= limit:
+            hits.setdefault(d, set()).add(status)
+    if not hits:
+        return None
+    closest = hits[min(hits)]
+    return next(iter(closest)) if len(closest) == 1 else None
 
 
 # --------------------------------------------------------------------------
@@ -150,15 +206,26 @@ def norm_severity(value):
 # --------------------------------------------------------------------------
 _NAME_NOISE = re.compile(r"[^a-z\s]")
 
+# "(Omnicom)", "[contractor]" — who someone works for, not who they are. Left
+# in, the tag split one person into two spellings and then printed itself into
+# every report: "Neha Lal (omnicom)", even on a market whose sheet never had it.
+_AFFILIATION = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]")
+
+
+def _strip_affiliation(s):
+    out = _AFFILIATION.sub(" ", s or "")
+    return re.sub(r"\s+", " ", out).strip().rstrip(".,;:").strip()
+
 
 def name_key(raw):
     """
     Collapse a raw name to a comparison key.
 
-    'sandeep.j@craftww.com' -> 'sandeep j'
-    'AMOL LAXMAN DOHALE'    -> 'amol laxman dohale'
+    'sandeep.j@craftww.com'   -> 'sandeep j'
+    'AMOL LAXMAN DOHALE'      -> 'amol laxman dohale'
+    'NEHA LAL (Omnicom)'      -> 'neha lal'
     """
-    s = _clean(raw)
+    s = _strip_affiliation(_clean(raw))
     if not s:
         return ""
     if "@" in s:                       # e-mail -> local part, dots become spaces
@@ -177,9 +244,11 @@ def display_name(raw):
     like EDM, and applied to people it leaves 'Neha LAL' and 'DAN Dsouza'
     shouting in the middle of a report.
     """
-    s = _clean(raw)
+    s = _strip_affiliation(_clean(raw))
     if "@" in s:
         s = s.split("@", 1)[0].replace(".", " ").replace("_", " ")
+    # "Sandeep.Jadhav" is two words to name_key; print it as two words too.
+    s = re.sub(r"(?<=[A-Za-z])[._](?=[A-Za-z])", " ", s)
     return _titlecase(s, keep_acronyms=False)
 
 
@@ -327,14 +396,60 @@ def _covered_by(small, big):
 
 
 def build_alias_lookup(dev_aliases):
-    """{canonical: [raw,...]} -> {name_key(raw): canonical} for O(1) resolution."""
+    """
+    {canonical: [raw,...]} -> {name_key(raw): canonical} for O(1) resolution.
+
+    Later groups win, and chains are followed to the end: when "Dipalee" was
+    folded into "Dipalee Dugaonkar" automatically and someone then decides
+    "Dipalee Dugaonkar" is "Dipali Tanaji Dugaokar", every spelling lands on
+    the last name, rather than half of them stopping one step short.
+    """
     lookup = {}
     for canon, raws in (dev_aliases or {}).items():
         for raw in list(raws) + [canon]:
             k = name_key(raw)
             if k:
                 lookup[k] = canon
+    for k in list(lookup):
+        seen, cur = {k}, lookup[k]
+        while True:
+            nxt = lookup.get(name_key(cur))
+            if not nxt or nxt == cur or name_key(nxt) in seen:
+                break
+            seen.add(name_key(cur))
+            cur = nxt
+        lookup[k] = cur
     return lookup
+
+
+def similar_people(canonical_names, first_ratio=0.75, last_ratio=0.70):
+    """
+    Pairs of names that look like one person spelled two ways.
+
+    'Dipalee Dugaonkar' / 'Dipali Tanaji Dugaokar', 'Mithesh Gupta' /
+    'Mitesh Umashankar Gupta'. Never applied — only suggested — because
+    'Neha Lal' and 'Neha Gupta' are two people, and a merge decided by a
+    string-similarity score would quietly erase one of them.
+
+    Both the first name and the surname must be close, so a shared first name
+    or a shared surname on its own is never enough.
+    """
+    from difflib import SequenceMatcher
+    people = []
+    for n in sorted(set(canonical_names)):
+        toks = name_key(n).split()
+        if len(toks) >= 2:
+            people.append((n, toks))
+    out = []
+    for i, (a, ta) in enumerate(people):
+        for b, tb in people[i + 1:]:
+            if ta == tb:
+                continue
+            f = SequenceMatcher(None, ta[0], tb[0]).ratio()
+            last = SequenceMatcher(None, ta[-1], tb[-1]).ratio()
+            if f >= first_ratio and last >= last_ratio and (f < 1 or last < 1):
+                out.append((a, b, round((f + last) / 2, 3)))
+    return sorted(out, key=lambda x: -x[2])
 
 
 def resolve_name(raw, lookup):

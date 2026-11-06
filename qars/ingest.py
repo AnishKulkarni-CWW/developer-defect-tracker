@@ -196,6 +196,27 @@ def _month_from_text(text):
     return None
 
 
+# Words that name a market in a file name. "jp" is a common shorthand on its
+# own; it only ever matches a whole word, so "jpeg" or "JPMINI" never count.
+_MARKET_WORDS = {"india": "India", "c3": "C3", "japan": "Japan", "jp": "Japan"}
+
+
+def market_from_filename(filename, markets=None):
+    """
+    The market a file's name says it is for — or None when it names none, or
+    more than one.
+
+    'September 2026 C3.xlsx' -> 'C3'. Three sheets arrive every month, and a
+    sheet read while the wrong market is selected used to be filed there
+    without a word; the name is the most reliable statement of where it goes.
+    """
+    stem = os.path.splitext(os.path.basename(filename or ""))[0].lower()
+    tokens = set(re.findall(r"[a-z0-9]+", stem))
+    hits = {m for word, m in _MARKET_WORDS.items()
+            if word in tokens and (markets is None or m in markets)}
+    return hits.pop() if len(hits) == 1 else None
+
+
 def month_label(ym):
     return f"{MONTH_FULL[ym[1] - 1]} {ym[0]}" if ym else "unknown"
 
@@ -238,7 +259,7 @@ def read_excel(file_like, market, filename=None, force_month=None):
 
     rows, skipped_blank, skipped_bad, undated = [], 0, 0, 0
     year_votes, month_votes = {}, {}
-    bad_examples = []
+    bad_examples, uncounted, typos = [], [], {}
 
     for n, raw in enumerate(grid[hdr_idx + 1:], start=hdr_idx + 2):
         if not any(v is not None and str(v).strip() != "" for v in raw):
@@ -246,13 +267,33 @@ def read_excel(file_like, market, filename=None, force_month=None):
             continue
         get = lambda k: _cell(raw, colmap.get(k))            # noqa: E731
 
-        status = nz.norm_status(get("status"))
+        status, typo = nz.read_status(get("status"))
         dev_raw = get("dev")
         if status is None or not str(dev_raw or "").strip():
             skipped_bad += 1
             if len(bad_examples) < 3:
                 bad_examples.append(f"row {n}")
+            # A row with a title, a status or a developer is a task someone
+            # audited, and leaving it out changes the totals — say which one and
+            # why. Anything else is a note, a stray cell, or the overflow of a
+            # long Details cell.
+            looks_like_task = any(str(get(k) or "").strip()
+                                  for k in ("title", "status", "dev"))
+            if looks_like_task:
+                raw_status = str(get("status") or "").strip()
+                if status is None:
+                    why = (f"Status '{raw_status}' is not one the app knows" if raw_status
+                           else "no Status")
+                    if not str(dev_raw or "").strip():
+                        why += " and no Developer Name"
+                else:
+                    why = "no Developer Name"
+                uncounted.append({"row": n, "title": _s(get("title"))[:80], "why": why})
             continue
+        if typo:
+            raw_status = str(get("status")).strip()
+            seen = typos.setdefault(raw_status, {"as": status, "rows": []})
+            seen["rows"].append(n)
 
         dt = _parse_date(get("date"))
         if dt is None:
@@ -325,6 +366,9 @@ def read_excel(file_like, market, filename=None, force_month=None):
         "skipped_blank": skipped_blank,
         "skipped_unreadable": skipped_bad,
         "skipped_examples": bad_examples,
+        # task rows left out, with the reason, and the typos read as a status
+        "uncounted_tasks": uncounted,
+        "status_typos": typos,
         "undated": undated,
         "dominant_year": dominant_year,
         "date_outliers": sorted(set(outliers))[:10],

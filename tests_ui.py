@@ -40,28 +40,37 @@ PASS, FAIL = [], []
 APP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
 
 # Confirming an import now writes the workbook into the report library. The
-# whole suite therefore runs against a throwaway copy of it: the shipped decks
-# are copied in so the app behaves exactly as it ships, and nothing a test does
-# can reach the repository.
+# whole suite therefore runs against a throwaway copy of it, and nothing a test
+# does can reach the repository. Most sections start from the two issued decks
+# alone — the history as it stood before any workbook was embedded — so the
+# rows they seed are the only workbook data in play; the sections about the
+# embedded months switch to everything that ships. Months imported after this
+# release (October onwards, on a live app) are never copied: they must not
+# change what a test expects.
+import json                                                  # noqa: E402
 import shutil                                                # noqa: E402
 import tempfile                                              # noqa: E402
 
 SHIPPED_DIR = library.DIR
 SCRATCH_DIR = tempfile.mkdtemp(prefix="qars_ui_lib_")
-for _name in os.listdir(SHIPPED_DIR):
-    _src = os.path.join(SHIPPED_DIR, _name)
-    if os.path.isdir(_src):
-        shutil.copytree(_src, os.path.join(SCRATCH_DIR, _name))
-    else:
-        shutil.copy2(_src, os.path.join(SCRATCH_DIR, _name))
-library.DIR = SCRATCH_DIR
-library.INDEX = os.path.join(SCRATCH_DIR, "index.json")
-library._CACHE.clear()
 
 
-def reset_library():
+def _fill_library(dest, mode):
+    with open(os.path.join(SHIPPED_DIR, "index.json"), encoding="utf-8") as fh:
+        shipped = [e for e in json.load(fh)["entries"] if e.get("shipped")]
+    keep = [e for e in shipped if mode == "shipped" or e["kind"] == "deck"]
+    for e in keep:
+        target = os.path.join(dest, e["file"])
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copy2(os.path.join(SHIPPED_DIR, e["file"]), target)
+    with open(os.path.join(dest, "index.json"), "w", encoding="utf-8") as fh:
+        json.dump({"entries": keep}, fh, indent=1)
+
+
+def reset_library(mode="decks"):
     """
-    Put the scratch library back to exactly what ships with the app.
+    Put the scratch library back to a known start: "decks" (the two issued
+    reports) or "shipped" (those plus the embedded July–September workbooks).
 
     The library is permanent by design, so an import in one section is still
     there in the next — correct behaviour, and exactly what makes these tests
@@ -69,14 +78,15 @@ def reset_library():
     """
     shutil.rmtree(SCRATCH_DIR, ignore_errors=True)
     os.makedirs(SCRATCH_DIR, exist_ok=True)
-    for name in os.listdir(SHIPPED_DIR):
-        src = os.path.join(SHIPPED_DIR, name)
-        dst = os.path.join(SCRATCH_DIR, name)
-        if os.path.isdir(src):
-            shutil.copytree(src, dst)
-        else:
-            shutil.copy2(src, dst)
+    _fill_library(SCRATCH_DIR, mode)
     library._CACHE.clear()
+
+
+_REAL_SIG = library.signature()
+_fill_library(SCRATCH_DIR, "decks")
+library.DIR = SCRATCH_DIR
+library.INDEX = os.path.join(SCRATCH_DIR, "index.json")
+library._CACHE.clear()
 
 
 def check(name, condition, detail=""):
@@ -110,6 +120,23 @@ def by_label(at, kind, text):
             return w
     raise KeyError(f"no {kind} labelled {text!r}; "
                    f"available: {[getattr(w, 'label', None) for w in getattr(at, kind)]}")
+
+
+def submit_form(at, fields, button):
+    """
+    Fill in form fields and press the form's submit button, in one run.
+
+    That is what a browser does: editing a widget inside an st.form does not
+    rerun the script — the values travel with the submit. Calling .run()
+    between the edit and the submit is a sequence no user can produce, and
+    since Streamlit 1.67 the test harness discards those uncommitted values,
+    exactly as the real form would.
+
+    fields: [(widget, value)]
+    """
+    for w, value in fields:
+        w.set_value(value)
+    by_label(at, "button", button).click().run()
 
 
 def has(at, kind, key):
@@ -323,13 +350,12 @@ check("Review-the-metrics preview renders", "Review the metrics" in body(at))
 section("CONFIGURE — filters change the numbers")
 at = fresh(nav="upload")
 ep = at.session_state["cfg_epoch"]
-widget(at, "multiselect", f"m_India_{ep}").set_value([7]).run()
-by_label(at, "button", "Apply filters").click().run()
+submit_form(at, [(widget(at, "multiselect", f"m_India_{ep}"), [7])], "Apply filters")
 cfg = at.session_state["cfg"]["India"]
 check("The applied months are remembered outside widget state", cfg["months"] == [7],
       str(cfg["months"]))
 check("The preview reports the narrowed period", "July 2026" in body(at))
-widget(at, "multiselect", f"m_India_{ep}").set_value([]).run()
+submit_form(at, [(widget(at, "multiselect", f"m_India_{ep}"), [])], "Apply filters")
 check("No months selected is explained, not crashed",
       "pick at least one year and one month" in body(at))
 
@@ -432,7 +458,7 @@ check("Current grouping is listed", "Current grouping" in page)
 check("Manual merge is available", has(at, "selectbox", "dm_keep")
       and has(at, "multiselect", "dm_fold"))
 check("Undo-a-merge is available", has(at, "selectbox", "dm_drop")
-      or "No merges defined" in page)
+      or "No merges made by hand yet" in page)
 
 grouping = tables(at)
 check("The grouping table lists the people found in the sheets",
@@ -447,17 +473,24 @@ if has(at, "button", "dm_merge_all"):
 else:
     check("Merge all clear variants applies the grouping", True, "already merged on import")
 
-before = len(at.session_state["settings"]["dev_aliases"])
+_keep = widget(at, "selectbox", "dm_keep").value
 widget(at, "multiselect", "dm_fold").set_value(["Amol Laxman Dohale"]).run()
 widget(at, "button", "dm_manual").click().run()
+_lookup = nz.build_alias_lookup(at.session_state["settings"]["dev_aliases"])
 check("A manual merge is applied",
-      len(at.session_state["settings"]["dev_aliases"]) >= before)
-if has(at, "selectbox", "dm_drop"):
-    n_before = len(at.session_state["settings"]["dev_aliases"])
-    widget(at, "button", "dm_undo").click().run()
-    check("Undo removes a grouping",
-          len(at.session_state["settings"]["dev_aliases"]) == n_before - 1,
-          f"{n_before} -> {len(at.session_state['settings']['dev_aliases'])}")
+      nz.resolve_name("Amol Laxman Dohale", _lookup) == _keep,
+      f"counted as {nz.resolve_name('Amol Laxman Dohale', _lookup)}")
+check("And kept with the history", "Amol Laxman Dohale" in library.aliases().get(_keep, []))
+check("A hand-made merge is offered for undoing", has(at, "selectbox", "dm_drop")
+      and widget(at, "selectbox", "dm_drop").value == _keep)
+widget(at, "button", "dm_undo").click().run()
+_lookup = nz.build_alias_lookup(at.session_state["settings"]["dev_aliases"])
+check("Undo removes the grouping",
+      nz.resolve_name("Amol Laxman Dohale", _lookup) != _keep
+      and _keep not in library.aliases(),
+      f"counted as {nz.resolve_name('Amol Laxman Dohale', _lookup)}")
+check("Nothing made automatically is offered for undoing",
+      not has(at, "selectbox", "dm_drop") and "No merges made by hand yet" in body(at))
 
 at = fresh(nav="data")
 n_periods = len(metrics.available_periods(at.session_state["db"], "India"))
@@ -485,9 +518,8 @@ reset_library()
 section("SETTINGS — branding, benchmarks, appearance and reset")
 at = fresh(nav="settings")
 ran_clean(at, "Settings renders")
-by_label(at, "text_input", "Brand name").set_value("Contoso").run()
-by_label(at, "text_input", "Prepared by").set_value("Anish K").run()
-by_label(at, "button", "Save changes").click().run()
+submit_form(at, [(by_label(at, "text_input", "Brand name"), "Contoso"),
+                 (by_label(at, "text_input", "Prepared by"), "Anish K")], "Save changes")
 s = at.session_state["settings"]
 check("Brand name is saved", s["org_name"] == "Contoso", s["org_name"])
 check("Prepared by is saved", s["prepared_by"] == "Anish K", s["prepared_by"])
@@ -638,12 +670,10 @@ check("Both link types are reported", "Test link defects" in page
 section("SINGLE MONTH — the app says what the report will contain")
 at = fresh(nav="upload")
 ep = at.session_state["cfg_epoch"]
-widget(at, "multiselect", f"m_India_{ep}").set_value([7]).run()
-by_label(at, "button", "Apply filters").click().run()
+submit_form(at, [(widget(at, "multiselect", f"m_India_{ep}"), [7])], "Apply filters")
 check("Selecting one month explains the consolidated section is dropped",
       "One month selected" in body(at))
-widget(at, "multiselect", f"m_India_{ep}").set_value([5, 6, 7]).run()
-by_label(at, "button", "Apply filters").click().run()
+submit_form(at, [(widget(at, "multiselect", f"m_India_{ep}"), [5, 6, 7])], "Apply filters")
 check("Selecting several months says nothing of the sort",
       "One month selected" not in body(at))
 
@@ -683,6 +713,12 @@ check("The collapse arrow is not hover-only any more",
       "stSidebarCollapseButton" in _css)
 check("The sidebar header keeps enough height to hold it",
       "min-height:34px" in _css)
+# Streamlit collapses the rail by setting max-width to 0; a min-width held
+# unconditionally wins over that and leaves a blank gutter where it was.
+_rail = [blk for blk in _css.split("}") if "min-width:286px" in blk]
+check("The rail's width holds only while it is open, so closing it frees the space",
+      bool(_rail) and all(':not([data-collapsed="true"])' in blk for blk in _rail),
+      f"{len(_rail)} rule(s)")
 
 reset_library()
 section("REPORT LIBRARY — the page that explains what is kept")
@@ -806,6 +842,363 @@ check("All four step names are present",
       all(n in body(at) for n in ("Upload data", "Configure", "Generate")))
 check("The audit sheet is the only file the workflow asks for",
       has(at, "button", "bxl_India") and not has(at, "button", "bpp_India"))
+
+def sheet(n, month=10, errors=0, observations=0, dev="Dev Oct", typo=None):
+    """An audit sheet as .csv bytes: errors first, then observations, then passes."""
+    lines = ["Mail Title,Date,Test Environment,Developer Name,Status,Error Type,"
+             "Error Severity"]
+    for i in range(n):
+        if i < errors:
+            status, cat, sev = "Error", "Content Related", "Major"
+        elif i < errors + observations:
+            status, cat, sev = "Observation", "", ""
+        else:
+            status, cat, sev = "First Time Correct", "", ""
+        if typo and i == n - 1:
+            status = typo
+        lines.append(f"Task {i + 1},2026-{month:02d}-{(i % 28) + 1:02d},Test,{dev},"
+                     f"{status},{cat},{sev}")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+OCTOBER = [("October 2026 India.csv", sheet(40, errors=3, observations=2, dev="Asha Rao")),
+           ("October 2026 C3.csv", sheet(30, errors=2, observations=1, dev="Neha Lal")),
+           ("October 2026 Japan.csv", sheet(20, errors=1, dev="Rohit Rajan", typo="Psas"))]
+
+
+def upload(at, market, files):
+    """Choose files in the uploader and press Read, as a person would."""
+    if at.session_state["nav"] != "upload":
+        at.session_state["nav"] = "upload"
+        at.run()
+    if at.session_state["market"] != market:
+        widget(at, "selectbox", "topbar_market").select(market).run()
+    at.file_uploader[0].set_value([(name, data, "text/csv") for name, data in files])
+    at.run()
+    widget(at, "button", f"bxl_{market}").click().run()
+
+
+def periods(at, market):
+    return sorted(metrics.available_periods(at.session_state["db"], market))
+
+
+def library_from(files, dest):
+    """A server's library folder, rebuilt from nothing but the repository."""
+    shutil.rmtree(dest, ignore_errors=True)
+    os.makedirs(dest, exist_ok=True)
+    for path, data in files.items():
+        if path.startswith("qars/library/"):
+            target = os.path.join(dest, path[len("qars/library/"):])
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "wb") as fh:
+                fh.write(data)
+    library._CACHE.clear()
+
+
+def repo_snapshot(folder):
+    out = {}
+    for root, _dirs, names in os.walk(folder):
+        for name in names:
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, folder).replace(os.sep, "/")
+            with open(full, "rb") as fh:
+                out[f"qars/library/{rel}"] = fh.read()
+    return out
+
+
+reset_library("shipped")
+section("EMBEDDED HISTORY — July to September ship with the app")
+at = fresh(seed=False)
+ran_clean(at, "The app boots on the embedded history alone")
+check("India arrives with July to September",
+      periods(at, "India") == [(2026, m) for m in (7, 8, 9)], str(periods(at, "India")))
+for _m in ("C3", "Japan"):
+    check(f"{_m} arrives with January to September",
+          periods(at, _m) == [(2026, k) for k in range(1, 10)], str(periods(at, _m)))
+check("No month outside 2026 appears anywhere",
+      all(y == 2026 for m in store.MARKETS for y, _ in periods(at, m)))
+widget(at, "selectbox", "topbar_market").select("India").run()
+page = body(at)
+check("India's dashboard shows the embedded figures", "423" in page and "93.85%" in page)
+widget(at, "selectbox", "topbar_market").select("Japan").run()
+check("Japan's dashboard counts all 656 tasks", "656" in body(at) and "96.19%" in body(at))
+check("Japan's period picker offers all nine months",
+      len(widget(at, "selectbox", "topbar_period_Japan").options) == 10,
+      str(widget(at, "selectbox", "topbar_period_Japan").options))
+at.session_state["nav"] = "upload"
+at.run()
+check("The upload page says Japan's months are already here",
+      "January 2026 – September 2026 is already here" in body(at))
+widget(at, "selectbox", "topbar_market").select("C3").run()
+by_label(at, "button", "Generate report").click().run()
+ran_clean(at, "A January–September C3 report generates")
+_rep = at.session_state["reports"].get("C3")
+_prs = Presentation(io.BytesIO(_rep["pptx"])) if _rep else None
+_blob = " ".join(sh.text_frame.text for sl in _prs.slides for sh in sl.shapes
+                 if sh.has_text_frame) if _prs else ""
+_blob += " " + " ".join(c.text for sl in _prs.slides for sh in sl.shapes if sh.has_table
+                        for r in sh.table.rows for c in r.cells) if _prs else ""
+check("The deck spans January to September", "Jan" in _blob and "Sep 2026" in _blob)
+check("The deck carries C3's combined score", "93.27%" in _blob)
+check("The deck counts every C3 task", "980" in _blob)
+at.session_state["nav"] = "data"
+at.run()
+page = body(at)
+check("The library lists all eleven shipped files", "11 file(s)" in page)
+check("It says which India task could not be counted, and why",
+      "iX1 LWB Brochure update" in page and "no Developer Name" in page)
+check("It says the Japan 'Psas' typo was read as a pass", "Psas" in page)
+
+reset_library("shipped")
+section("OCTOBER — three sheets read from one page, each filed under its own market")
+at = fresh(seed=False, nav="upload")
+upload(at, "India", OCTOBER)
+_pend = at.session_state["pending"].get("India")
+check("All three sheets are read from the one page", bool(_pend) and len(_pend["staged"]) == 3,
+      str(len(_pend["staged"])) if _pend else "nothing staged")
+check("Each goes to the market its name says",
+      [x["market"] for x in _pend["staged"]] == ["India", "C3", "Japan"],
+      str([x["market"] for x in _pend["staged"]]))
+check("The review says where the C3 and Japan sheets will go",
+      body(at).count("📬") == 2, str(body(at).count("📬")))
+check("The status typo is called out before anything is imported",
+      "“Psas”" in body(at) and "looks like a typo" in body(at))
+widget(at, "button", "conf_India").click().run()
+ran_clean(at, "Confirming three markets at once runs clean")
+check("India now runs July to October",
+      periods(at, "India") == [(2026, m) for m in (7, 8, 9, 10)], str(periods(at, "India")))
+for _m in ("C3", "Japan"):
+    check(f"{_m} now runs January to October",
+          periods(at, _m) == [(2026, k) for k in range(1, 11)], str(periods(at, _m)))
+check("October is kept in the library for every market",
+      all((2026, 10) in library.periods_for(m) for m in store.MARKETS))
+check("The app says where each sheet went",
+      all(f"{m}: 1 file(s) added to the report library" in body(at) for m in store.MARKETS))
+_s = at.session_state["settings"]
+_db = at.session_state["db"]
+check("The months already there are untouched",
+      [metrics.totals(metrics.select(_db, "India", _s, {"periods": [(2026, m)]}))
+       ["total_tasks"] for m in (7, 8, 9, 10)] == [176, 93, 154, 40])
+check("Japan's October counts the 'Psas' task",
+      metrics.totals(metrics.select(_db, "Japan", _s, {"periods": [(2026, 10)]}))
+      ["total_tasks"] == 20)
+
+_next = fresh(seed=False)
+check("A brand-new visitor gets October in all three markets",
+      all((2026, 10) in periods(_next, m) for m in store.MARKETS))
+widget(_next, "selectbox", "topbar_market").select("C3").run()
+_next.session_state["nav"] = "upload"
+_next.run()
+check("And is told January to October is already here",
+      "January 2026 – October 2026 is already here" in body(_next))
+by_label(_next, "button", "Generate report").click().run()
+_rep = _next.session_state["reports"].get("C3")
+_prs = Presentation(io.BytesIO(_rep["pptx"])) if _rep else None
+_blob = " ".join(sh.text_frame.text for sl in _prs.slides for sh in sl.shapes
+                 if sh.has_text_frame) if _prs else ""
+_blob += " " + " ".join(c.text for sl in _prs.slides for sh in sl.shapes if sh.has_table
+                        for r in sh.table.rows for c in r.cells) if _prs else ""
+check("Their C3 report runs January to October without uploading anything",
+      "Oct 2026" in _blob and "1,010" in _blob)
+
+section("NOVEMBER — next month is one file per market")
+upload(_next, "C3", [("November 2026 C3.csv", sheet(25, month=11, errors=1, dev="Neha Lal"))])
+widget(_next, "button", "conf_C3").click().run()
+check("C3 runs January to November",
+      periods(_next, "C3") == [(2026, k) for k in range(1, 12)], str(periods(_next, "C3")))
+upload(_next, "C3", [("October 2026 C3 corrected.csv", sheet(33, errors=2, dev="Neha Lal"))])
+widget(_next, "button", "conf_C3").click().run()
+_db, _s = _next.session_state["db"], _next.session_state["settings"]
+check("A corrected October replaces October, nothing else",
+      metrics.totals(metrics.select(_db, "C3", _s, {"periods": [(2026, 10)]}))["total_tasks"]
+      == 33 and periods(_next, "C3") == [(2026, k) for k in range(1, 12)])
+check("The replaced file is gone from the library",
+      not any(e["source_name"] == "October 2026 C3.csv" for e in library.summary()))
+
+reset_library("shipped")
+section("CORRECTIONS — a shipped month can be corrected, and the correction undone")
+at = fresh(seed=False, nav="upload")
+upload(at, "India", [("July 2026 India corrected.csv", sheet(180, month=7, errors=4,
+                                                               dev="Asha Rao"))])
+widget(at, "button", "conf_India").click().run()
+_db, _s = at.session_state["db"], at.session_state["settings"]
+check("July counts the corrected sheet only",
+      metrics.totals(metrics.select(_db, "India", _s, {"periods": [(2026, 7)]}))
+      ["total_tasks"] == 180)
+at.session_state["nav"] = "data"
+at.run()
+check("The library says the shipped July no longer counts, and why",
+      "now comes from <b>July 2026 India corrected.csv</b>" in body(at))
+_opts = widget(at, "selectbox", "lib_rm_pick").options
+widget(at, "selectbox", "lib_rm_pick").select(
+    next(o for o in _opts if "corrected" in o)).run()
+check("Removing the correction is seen to put the shipped July back",
+      "puts July 2026 back from July 2026 India.xlsx" in body(at))
+widget(at, "button", "lib_rm_go").click().run()
+check("And it does",
+      metrics.totals(metrics.select(at.session_state["db"], "India",
+                                    at.session_state["settings"], {"periods": [(2026, 7)]}))
+      ["total_tasks"] == 176)
+
+reset_library("shipped")
+section("NAMES — a decision made once holds for everyone")
+at = fresh(seed=False, nav="data")
+page = body(at)
+check("Look-alike spellings are offered for a decision", "Possibly the same person" in page)
+for _a, _b in [("Mithesh Gupta", "Mitesh Umashankar Gupta"),
+               ("Sarika Joshi", "Sarika Rupesh Joshte"),
+               ("Dipalee Dugaonkar", "Dipali Tanaji Dugaokar")]:
+    check(f"Suggested: {_a} / {_b}", _a in page and _b in page)
+check("Short names shared by two people are asked about, not guessed",
+      has(at, "selectbox", "amb_Mitesh") and has(at, "selectbox", "amb_Neha"))
+
+
+def _devs(at_):
+    return sum(metrics.totals(metrics.select(at_.session_state["db"], m,
+                                             at_.session_state["settings"], {}))
+               ["developers"] for m in store.MARKETS)
+
+
+_before = _devs(at)
+by_label(at, "button", "Count both as Mitesh Umashankar Gupta").click().run()
+check("Counting both as one person is kept in the library",
+      "Mithesh Gupta" in library.aliases().get("Mitesh Umashankar Gupta", []),
+      str(library.aliases()))
+_next = fresh(seed=False, nav="data")
+check("A new visitor counts them as one person", _devs(_next) == _before - 1,
+      f"{_before} -> {_devs(_next)}")
+check("And is not asked again", "Mithesh Gupta" not in body(_next)
+      or "Count both as Mitesh Umashankar Gupta" not in
+      [b.label for b in _next.button])
+widget(_next, "button", "sim_no_0").click().run()
+check("'Different people' is kept too",
+      frozenset(("Sarika Joshi", "Sarika Rupesh Joshte")) in library.distinct_pairs(),
+      str(library.distinct_pairs()))
+_next = fresh(seed=False, nav="data")
+check("And that pair is not suggested again",
+      not any("Sarika" in (b.label or "") for b in _next.button))
+widget(_next, "selectbox", "amb_Neha").select("Leave separate").run()
+widget(_next, "button", "ambb_Neha").click().run()
+_next = fresh(seed=False, nav="data")
+check("An ambiguous name answered once stays answered",
+      not has(_next, "selectbox", "amb_Neha") and has(_next, "selectbox", "amb_Mitesh"))
+
+reset_library()
+section("KEEPING — the upload page says whether an import will last")
+at = fresh(nav="upload")
+check("Without publishing, it says a hosted server forgets imports",
+      "forgets imports when it restarts" in body(at))
+
+reset_library("shipped")
+section("PUBLISHING — switched on through the app's secrets, end to end")
+from fake_github import FakeGitHub                           # noqa: E402
+_gh = FakeGitHub(files=repo_snapshot(SCRATCH_DIR)).start()
+_saved_api = publish.API
+publish.API = _gh.url
+_SECRETS = {"token": "good-token", "repo": "owner/repo", "branch": "main"}
+
+
+def hosted(nav="home"):
+    at_ = AppTest.from_file(APP, default_timeout=300)
+    at_.secrets["github"] = dict(_SECRETS)
+    at_.session_state["db"] = store._empty_db()
+    at_.session_state["settings"] = store._default_settings()
+    at_.session_state["nav"] = nav
+    at_.run()
+    return at_
+
+
+try:
+    at = hosted("upload")
+    ran_clean(at, "The app boots with publishing configured")
+    check("A token in the secrets switches publishing on",
+          publish.enabled() and publish.status()["repo"] == "owner/repo")
+    check("The upload page says imports are committed",
+          "Imports are committed to" in body(at) and "owner/repo" in body(at))
+    _n = len(_gh.history())
+    upload(at, "India", OCTOBER)
+    widget(at, "button", "conf_India").click().run()
+    ran_clean(at, "Confirming October with publishing on runs clean")
+    check("Three markets confirmed together land as ONE commit",
+          len(_gh.history()) == _n + 1, str(_gh.history()[:3]))
+    _files = _gh.files()
+    check("The commit carries all three October workbooks",
+          all(any(p.startswith(f"qars/library/{m}/2026-10_") for p in _files)
+              for m in store.MARKETS))
+    _idx = json.loads(_files["qars/library/index.json"])["entries"]
+    check("And an index listing them",
+          sum(1 for e in _idx if e.get("primary") == "2026-10") == 3)
+    check("Alongside everything that shipped", sum(1 for e in _idx if e.get("shipped")) == 11)
+    check("The app says they are part of the app now",
+          "committed to the repository" in body(at))
+
+    # The server restarts. Its disk is rebuilt from the repository and nothing else.
+    library_from(_gh.files(), SCRATCH_DIR)
+    _after = fresh(seed=False)
+    check("After a restart every market still has October",
+          all((2026, 10) in periods(_after, m) for m in store.MARKETS))
+    check("And all of its history before that",
+          periods(_after, "C3") == [(2026, k) for k in range(1, 11)]
+          and periods(_after, "India") == [(2026, m) for m in (7, 8, 9, 10)])
+
+    at = hosted("data")
+    widget(at, "button", "lib_check").click().run()
+    check("Check connection confirms the repository and branch",
+          "Connected to owner/repo on main" in body(at))
+    _n = len(_gh.history())
+    by_label(at, "button", "Count both as Mitesh Umashankar Gupta").click().run()
+    _names = json.loads(_gh.files().get("qars/library/aliases.json", b"{}"))
+    check("A name decision is committed as well",
+          "Mithesh Gupta" in _names.get("aliases", {}).get("Mitesh Umashankar Gupta", [])
+          and len(_gh.history()) == _n + 1, str(_names)[:120])
+    at = hosted("data")
+    _n = len(_gh.history())
+    widget(at, "button", "lib_publish").click().run()
+    check("Publishing a library the repository already has makes no empty commit",
+          "already has all of this" in body(at) and len(_gh.history()) == _n,
+          str(_gh.history()[:2]))
+    _opts = widget(at, "selectbox", "lib_rm_pick").options
+    widget(at, "selectbox", "lib_rm_pick").select(
+        next(o for o in _opts if "October 2026 Japan.csv" in o)).run()
+    widget(at, "button", "lib_rm_go").click().run()
+    _files = _gh.files()
+    check("Removing a file removes it from the repository in one commit",
+          not any(p.startswith("qars/library/Japan/2026-10_") for p in _files)
+          and len(_gh.history()) == _n + 1)
+    check("And from the index there",
+          not any(e.get("file", "").startswith("Japan/2026-10_")
+                  for e in json.loads(_files["qars/library/index.json"])["entries"]))
+
+    # A server that is behind the repository must not erase what it has not seen.
+    _gh.commit_elsewhere({
+        "qars/library/India/2026-11_November_India.csv": sheet(12, month=11),
+        "qars/library/index.json": json.dumps({"entries": json.loads(
+            _gh.files()["qars/library/index.json"])["entries"] + [{
+                "id": "India-2026-11_November_India.csv", "market": "India",
+                "file": "India/2026-11_November_India.csv", "kind": "workbook",
+                "shipped": False, "periods": ["2026-11"], "primary": "2026-11",
+                "added": "2026-12-01T09:00:00",
+                "source_name": "November India.csv"}]}).encode()},
+        "November, from another server")
+    at = hosted("upload")
+    upload(at, "C3", [("November 2026 C3.csv", sheet(25, month=11, dev="Neha Lal"))])
+    widget(at, "button", "conf_C3").click().run()
+    _idx = json.loads(_gh.files()["qars/library/index.json"])["entries"]
+    check("Publishing from a server that is behind keeps the newer months",
+          {"India/2026-11_November_India.csv"} <= {e["file"] for e in _idx}
+          and any(e["file"].startswith("C3/2026-11_") for e in _idx),
+          str(sorted(e["file"] for e in _idx if "2026-11" in e["file"])))
+finally:
+    publish.API = _saved_api
+    publish.configure(token="", repo="")
+    _gh.stop()
+
+section("THE REAL LIBRARY — untouched by every test above")
+library.DIR, library.INDEX = SHIPPED_DIR, os.path.join(SHIPPED_DIR, "index.json")
+library._CACHE.clear()
+check("Nothing in qars/library was changed by this suite", library.signature() == _REAL_SIG)
+shutil.rmtree(SCRATCH_DIR, ignore_errors=True)
+
 
 # ==========================================================================
 print("\n" + "=" * 62)
