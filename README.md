@@ -8,11 +8,18 @@ The brand on the cover is whatever you type on the Settings page; nothing in the
 app is tied to one client.
 
 **You upload one month, not the whole year.** Every sheet the app imports is
-kept in its **report library** — the folder `qars/library/`, alongside the two
-PowerPoint reports that were issued before this tool existed. Everything in that
-folder is loaded at start-up, so January–June 2026 for C3 and Japan is there
-before you upload anything, July joins it when you import July, and next month
-you import only August. Everyone using the same server sees the same history.
+kept in its **report library** — the folder `qars/library/`. The app ships with
+the history to date already in it:
+
+| Market | Shipped history | From |
+|---|---|---|
+| C3 | January – September 2026 | the issued Jan–Jun report, then the Jul, Aug and Sep audit sheets |
+| Japan | January – September 2026 | the issued Jan–Jun report, then the Jul, Aug and Sep audit sheets |
+| India | July – September 2026 | the Jul, Aug and Sep audit sheets |
+
+Everything in that folder is loaded at start-up. Import October's three sheets
+and October joins that history; next month you import only November. Everyone
+using the same server sees the same history.
 
 On a hosted server there is one more step to make a month outlive a restart —
 see [The report library](#the-report-library).
@@ -228,6 +235,12 @@ library and are already there before you upload anything. A workbook for one of
 those months *replaces* the deck figures for it, because task-level detail is
 richer than a recovered summary.
 
+**All three markets from one page.** Select the three sheets together. A file
+whose name says its market — `October 2026 C3.xlsx`, `JP October.xlsx` — is
+filed under that market whichever market is selected at the top, and the review
+step says so (📬) before anything is imported. A name that mentions no market,
+or more than one, goes to the selected market.
+
 On **Confirm and import** the file itself is written into the library, so it is
 there for the next report and the next person — see below.
 
@@ -245,9 +258,21 @@ If those signals disagree you get a clear warning:
 You can confirm or override the reporting period from the dropdown before
 anything is imported.
 
-Underneath, the app reports anything else worth knowing before you commit: rows
-it had to skip and why, rows dated outside the dominant year (usually typos in
-the sheet), and rows with no date at all.
+Underneath, the app reports anything else worth knowing before you commit:
+
+- **task rows it cannot count**, by row number and title, with the reason — a
+  task with no Status, or a Status but no Developer Name;
+- **status typos** it read as the status they plainly are — `Psas` as Pass,
+  `Eror` as Error — so a slip of the keyboard does not drop a real task. Only a
+  near-miss on one known status is read this way; `Hold`, `Pending` or `N/A`
+  stay unread and are reported;
+- rows dated outside the dominant month or year (usually typos in the sheet) —
+  when one month holds nearly all the rows, the whole file is set to that month
+  for you, still visible and still overridable;
+- rows with no date at all.
+
+Rows with nothing of a task in them (notes, the overflow of a long Details
+cell) are skipped quietly and only counted.
 
 Press **Confirm and import**, or **Cancel** to discard.
 
@@ -294,15 +319,47 @@ Each imported sheet is stored in `qars/library/<Market>/` as the file it came
 from, with `qars/library/index.json` recording which file covers which months.
 Everything there is loaded on every start-up. That gives three things at once:
 
-- **you upload only the newest month** — July stays, August is added next to it;
+- **you upload only the newest month** — September stays, October is added
+  next to it;
 - **a re-import replaces, never duplicates** — a corrected sheet for a month
   already held swaps it out;
 - **everyone on the same server shares the history** — they all read the folder.
 
+**Every month comes from exactly one file.** The rule:
+
+1. a month comes from the newest sheet that is *for* that month — the month most
+   of its rows are in, or the month you chose in the review step;
+2. a month no sheet is for comes from the newest sheet with rows in it.
+
+So a corrected re-upload takes its month over, three rows mistyped into
+September never take September away from September's own sheet, and a sheet
+spanning two months still supplies whichever of them nobody else covers. A file
+is deleted only when it no longer supplies a single month, and a shipped file is
+never deleted: a correction of a shipped month takes the month over, and
+removing the correction puts the shipped sheet back.
+
 **Data Manager → Report library** shows what is kept, where each month came from
-(*Shipped with the app* or *Imported*), and lets you remove an imported file
-again. Removing one takes its months out of the history; the two shipped reports
-stay, because they are part of the application.
+(*Shipped with the app* or *Imported*), a note under any file another file has
+replaced and any rows a file could not count, and lets you remove an imported
+file again — saying first exactly which months that takes away or puts back.
+
+**Name decisions are kept the same way.** When you tell the app on the Data
+Manager page that two spellings are one person — or two different people — the
+decision is written to `qars/library/aliases.json`, next to the months. It is
+made once and holds for everyone, and it is published with the library.
+
+#### What the shipped sheets needed
+
+The July–September workbooks are kept byte for byte as they were delivered;
+these corrections are applied when they are read, and recorded in
+`qars/library/index.json`:
+
+| Sheet | What it has | What the app does |
+|---|---|---|
+| C3 September 2026 | two rows dated 1975 | files the whole sheet under September 2026 |
+| Japan July 2026 | three re-test rows dated August | files the whole sheet under July 2026 |
+| Japan September 2026 | one Status typed `Psas` | counts it as Pass (72 tasks, as the sheet has) |
+| India September 2026 | row 140 *iX1 LWB Brochure update* has no Developer Name; row 111 has no Status | not counted (154 of 155 audited rows) — fill them in and re-upload the sheet to count them |
 
 #### Making months permanent on a hosted server
 
@@ -313,20 +370,34 @@ the repository every time it restarts. An imported file is shared with everyone
 using the app *right now*, but to outlive a restart it has to reach the
 repository. Two ways, both on the Report library tab:
 
-**Automatic.** Put a GitHub token in `.streamlit/secrets.toml` and every import
-commits itself:
+**Automatic** — set up once, about five minutes:
 
-```toml
-[github]
-token  = "ghp_..."          # a fine-grained token with Contents: write
-repo   = "owner/repository"
-branch = "main"
-```
+1. On GitHub: **Settings → Developer settings → Personal access tokens →
+   Fine-grained tokens → Generate new token**. Repository access: *Only select
+   repositories* → this repository. Permissions: **Contents: Read and write**.
+   Copy the token.
+2. On Streamlit Community Cloud: open the app's **⋮ → Settings → Secrets** and
+   paste (on your own machine, the same goes in `.streamlit/secrets.toml`):
 
-(Or set `QARS_GITHUB_TOKEN`, `QARS_GITHUB_REPO` and `QARS_GITHUB_BRANCH`.) The
-commit triggers the usual redeploy, and the month is part of the app from then
-on. **This is the only part of the product that uses the network, and only when
-you switch it on.** With no token configured the app makes no network calls.
+   ```toml
+   [github]
+   token  = "github_pat_..."
+   repo   = "owner/repository"
+   branch = "main"             # the branch the app is deployed from
+   ```
+
+3. Save. The app restarts. Open **Data Manager → Report library** and press
+   **🔌 Check connection** — it says plainly whether the token, repository and
+   branch are right, and writes nothing.
+
+(Or set `QARS_GITHUB_TOKEN`, `QARS_GITHUB_REPO` and `QARS_GITHUB_BRANCH`.) From
+then on every confirmation is committed as **one commit** — all the sheets you
+confirmed together, the index that describes them, and the removal of any file
+they replaced — and the index is merged with the repository's own copy, never
+written over it. The commit triggers the usual redeploy, and the months are part
+of the app from then on. **This is the only part of the product that uses the
+network, and only when you switch it on.** With no token configured the app
+makes no network calls.
 
 **By hand.** *Download the library pack*, unzip it over `qars/library/` in the
 repository, commit, push. Same result.
@@ -512,8 +583,10 @@ Task-level Excel data is always the primary source when it is available.
 ## 8. Running the tests
 
 There are two suites. Neither needs a test framework, neither touches the
-network, and neither modifies your saved data — every check builds its own
-in-memory database.
+network, and neither modifies your saved data or `qars/library/` — every check
+builds its own in-memory database, and the library tests run on a private copy
+of the shipped files. Months you import after this release do not change what
+the tests expect.
 
 ```
 python tests.py        # the calculation engine
@@ -522,10 +595,15 @@ python tests_ui.py     # the interface
 
 **`tests.py`** covers the calculation engine, ingestion, filtering, legacy deck
 conversion, name merging, error handling, hosted storage and output
-consistency, the report library, the no-target rule and slide geometry.
-178 checks run on their own; more when the optional sample workbooks referenced
-at the top of the file are present. The library tests run against a throwaway
-copy of the folder, so they never write into the repository.
+consistency, the report library, the no-target rule and slide geometry. It
+checks every shipped month against figures counted by hand from the sheets,
+that every month comes from exactly one file, both ways one month's file could
+once take another's, status typos, file-name routing, and that a damaged
+`index.json` costs nothing. Publishing runs end to end against `fake_github.py`,
+a stand-in for GitHub's API on 127.0.0.1: a wrong token, repository or branch,
+a read-only token, one commit per import, no empty commits, someone else
+committing first, and a server rebuilt from the repository alone still having
+the month.
 
 **`tests_ui.py`** boots the real `app.py` through Streamlit's own AppTest
 harness and clicks the real widgets: every page renders, every nav item
@@ -533,15 +611,19 @@ switches, the market and period pickers work, a file is staged, reviewed,
 validated and imported, every filter and section switch is present, a report
 generates, and the deck it produces carries the same figures the screen showed.
 It also exercises the destructive paths — delete a period, clear a market,
-clear everything — and checks each empty state explains itself. It also proves
-the point of the library: a month imported in one session is picked up by a
-brand-new one. 223 checks.
+clear everything — and checks each empty state explains itself. It proves the
+monthly routine end to end: the shipped July–September history is on screen
+with no upload, three October sheets read from one page land in their own
+markets, a new visitor reports January–October without uploading anything, a
+correction and its undo behave, name decisions hold for the next visitor, and
+— with publishing switched on through the app's secrets — one confirmation is
+one commit that a restarted server still has.
 
 Both end with their own count:
 
 ```
-  178 passed, 0 failed
-  223 passed, 0 failed
+  324 passed, 0 failed
+  295 passed, 0 failed
 ```
 
 ---
@@ -623,9 +705,11 @@ cannot be, for two reasons:
   *Clear all data* would wipe everybody's.
 
 For client QA data neither is acceptable, so the app detects a hosted
-environment and switches to **session storage**: nothing is written to disk, and
-each browser session gets its own private copy. A banner at the top of the app
-says so.
+environment and switches to **session storage** for its working database:
+nothing of it is written to disk, and each browser session gets its own private
+copy. The report library is the deliberate exception — it is shared, because
+it is the history everyone reports from, and it is made permanent by publishing
+it to the repository (see [The report library](#the-report-library)).
 
 **Work is kept with the two buttons on the Data Manager page:**
 
@@ -658,13 +742,18 @@ git remote add origin https://github.com/<you>/<repo>.git
 git push -u origin main
 ```
 
-A `.gitignore` is included. It deliberately excludes `data/*.json`, so **client
-audit data is never committed** — check `git status` before your first commit
-and confirm no database file is listed.
+A `.gitignore` is included. It deliberately excludes `data/*.json`, so the
+working database is never committed — check `git status` before your first
+commit and confirm no database file is listed.
 
-Use a **private** repository if the audit sheets are confidential. Community
-Cloud can deploy from private repos, but note that the *app URL itself is
-public* unless you restrict viewers in the app settings.
+**The report library is committed on purpose.** `qars/library/` holds the audit
+sheets themselves — that is what lets every visitor, and every restarted server,
+have the whole history — and publishing adds each new month's sheet to it. So
+**anyone who can read the repository can read the sheets.** Keep the repository
+**private** (GitHub → the repository's **Settings → General → Danger Zone →
+Change visibility**). Community Cloud deploys from private repositories once
+you have authorised it, and the app keeps working unchanged; note that the *app
+URL itself is public* unless you restrict viewers in the app settings.
 
 ### Deploying
 
@@ -746,6 +835,7 @@ QA_Report_Studio/
 ├── app.py                  Streamlit UI — rail, pages, workflow, generation
 ├── tests.py                Engine checks      (python tests.py)
 ├── tests_ui.py             Interface checks   (python tests_ui.py)
+├── fake_github.py          Stand-in for GitHub's API, used by both test suites
 ├── requirements.txt
 ├── .gitignore              keeps client data out of version control
 ├── run_windows.bat         Windows launcher
@@ -754,9 +844,11 @@ QA_Report_Studio/
 ├── data/                   Your JSON database (created on first run)
 └── qars/
     ├── library.py          The report library — every month, as its own file
-    ├── library/            Those files, plus index.json
-    │   ├── C3/             Jan-Jun 2026 as issued, then whatever you import
-    │   └── Japan/          Jan-Jun 2026 as issued
+    ├── library/            Those files, plus index.json (and aliases.json once
+    │   │                   a name decision has been made)
+    │   ├── C3/             Jan-Jun 2026 as issued, Jul-Sep 2026 sheets, then imports
+    │   ├── India/          Jul-Sep 2026 sheets, then imports
+    │   └── Japan/          Jan-Jun 2026 as issued, Jul-Sep 2026 sheets, then imports
     ├── publish.py          Optional: commits the library back to GitHub
     ├── theme.py            Design system — palette, tokens and the app stylesheet
     ├── store.py            Atomic JSON persistence

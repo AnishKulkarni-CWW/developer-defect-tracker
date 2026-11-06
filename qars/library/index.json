@@ -33,6 +33,131 @@
    ],
    "added": "2026-09-17T00:00:00",
    "source_name": "Japan_Quality_Defect_Report_2026.pptx"
+  },
+  {
+   "id": "India-2026-07_July_2026_India.xlsx",
+   "market": "India",
+   "file": "India/2026-07_July_2026_India.xlsx",
+   "kind": "workbook",
+   "shipped": true,
+   "periods": [
+    "2026-07"
+   ],
+   "primary": "2026-07",
+   "added": "2026-11-06T13:04:59",
+   "source_name": "July 2026 India.xlsx"
+  },
+  {
+   "id": "India-2026-08_August_2026_India.xlsx",
+   "market": "India",
+   "file": "India/2026-08_August_2026_India.xlsx",
+   "kind": "workbook",
+   "shipped": true,
+   "periods": [
+    "2026-08"
+   ],
+   "primary": "2026-08",
+   "added": "2026-11-06T13:04:59.001",
+   "source_name": "August 2026 India.xlsx"
+  },
+  {
+   "id": "India-2026-09_September_2026_India.xlsx",
+   "market": "India",
+   "file": "India/2026-09_September_2026_India.xlsx",
+   "kind": "workbook",
+   "shipped": true,
+   "periods": [
+    "2026-09"
+   ],
+   "primary": "2026-09",
+   "added": "2026-11-06T13:04:59.002",
+   "source_name": "September 2026 India.xlsx"
+  },
+  {
+   "id": "C3-2026-07_July_2026_C3.xlsx",
+   "market": "C3",
+   "file": "C3/2026-07_July_2026_C3.xlsx",
+   "kind": "workbook",
+   "shipped": true,
+   "periods": [
+    "2026-07"
+   ],
+   "primary": "2026-07",
+   "added": "2026-11-06T13:04:59.003",
+   "source_name": "July 2026 C3.xlsx"
+  },
+  {
+   "id": "C3-2026-08_August_2026_C3.xlsx",
+   "market": "C3",
+   "file": "C3/2026-08_August_2026_C3.xlsx",
+   "kind": "workbook",
+   "shipped": true,
+   "periods": [
+    "2026-08"
+   ],
+   "primary": "2026-08",
+   "added": "2026-11-06T13:04:59.004",
+   "source_name": "August 2026 C3.xlsx"
+  },
+  {
+   "id": "C3-2026-09_September_2026_C3.xlsx",
+   "market": "C3",
+   "file": "C3/2026-09_September_2026_C3.xlsx",
+   "kind": "workbook",
+   "shipped": true,
+   "periods": [
+    "2026-09"
+   ],
+   "primary": "2026-09",
+   "added": "2026-11-06T13:04:59.005",
+   "source_name": "September 2026 C3.xlsx",
+   "force_month": [
+    2026,
+    9
+   ]
+  },
+  {
+   "id": "Japan-2026-07_July_2026_Japan.xlsx",
+   "market": "Japan",
+   "file": "Japan/2026-07_July_2026_Japan.xlsx",
+   "kind": "workbook",
+   "shipped": true,
+   "periods": [
+    "2026-07"
+   ],
+   "primary": "2026-07",
+   "added": "2026-11-06T13:04:59.006",
+   "source_name": "July 2026 Japan.xlsx",
+   "force_month": [
+    2026,
+    7
+   ]
+  },
+  {
+   "id": "Japan-2026-08_August_2026_Japan.xlsx",
+   "market": "Japan",
+   "file": "Japan/2026-08_August_2026_Japan.xlsx",
+   "kind": "workbook",
+   "shipped": true,
+   "periods": [
+    "2026-08"
+   ],
+   "primary": "2026-08",
+   "added": "2026-11-06T13:04:59.007",
+   "source_name": "August 2026 Japan.xlsx"
+  },
+  {
+   "id": "Japan-2026-09_September_2026_Japan.xlsx",
+   "market": "Japan",
+   "file": "Japan/2026-09_September_2026_Japan.xlsx",
+   "kind": "workbook",
+   "shipped": true,
+   "periods": [
+    "2026-09"
+   ],
+   "primary": "2026-09",
+   "added": "2026-11-06T13:04:59.008",
+   "source_name": "September 2026 Japan.xlsx"
   }
  ]
 }

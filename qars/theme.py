@@ -256,6 +256,11 @@ h1, h2, h3, h4, h5 { font-family:var(--ui); color:var(--ink); letter-spacing:-.0
 section[data-testid="stSidebar"] {
   background:var(--card) !important;
   border-right:1px solid var(--border);
+}
+/* The rail's width applies only while it is open. Streamlit collapses it by
+   setting max-width to 0, and a min-width held here would win over that and
+   keep a blank 286px gutter where the rail used to be. */
+section[data-testid="stSidebar"]:not([data-collapsed="true"]):not([aria-expanded="false"]) {
   width:286px !important; min-width:286px !important;
 }
 section[data-testid="stSidebar"] > div { padding-top:0 !important; }
@@ -547,6 +552,9 @@ section[data-testid="stSidebar"] .st-key-nav_help_cta button:hover {
                 overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .qrs-table th.num, .qrs-table td.num { text-align:right; width:72px; }
 .qrs-table tr:hover td { background:var(--card-2); }
+/* A note under one row: what a kept file left out, or what replaced it. */
+.qrs-table tr.qrs-sub td { border-top:none; padding:0 11px 9px; color:var(--muted);
+                           font-size:.74rem; white-space:normal; }
 
 /* Keep dataframes inside their column instead of scrolling sideways. */
 div[data-testid="stDataFrame"] { width:100% !important; }
