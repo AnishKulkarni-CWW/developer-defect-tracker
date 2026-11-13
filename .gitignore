@@ -7,6 +7,10 @@
 # survive a hosted server restarting.
 data/
 
+# The generated agent pack. It carries developer names and scores, and is
+# rebuilt on demand by `python agent/build_pack.py`.
+agent/pack/
+
 # Credentials. The optional GitHub token that publishes the library lives here,
 # and must never reach the repository it publishes to.
 .streamlit/secrets.toml

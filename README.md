@@ -26,6 +26,13 @@ see [The report library](#the-report-library).
 
 ---
 
+**Moving to an Omni agent?** The [`agent/`](agent/README.md) folder holds the
+text for every Agent Builder section, the files the agent needs, a test with
+known answers, and the procedure. `python agent/build_pack.py` builds the pack
+from the report library.
+
+---
+
 ## Contents
 
 1. [Installation](#1-installation)
@@ -603,7 +610,9 @@ once take another's, status typos, file-name routing, and that a damaged
 a stand-in for GitHub's API on 127.0.0.1: a wrong token, repository or branch,
 a read-only token, one commit per import, no empty commits, someone else
 committing first, and a server rebuilt from the repository alone still having
-the month.
+the month. It also holds the report to its look — white pages, no orange in the
+deck or its charts, the app's own colours untouched — and checks that the
+history built for the Omni agent adds up to the tool's own figures.
 
 **`tests_ui.py`** boots the real `app.py` through Streamlit's own AppTest
 harness and clicks the real widgets: every page renders, every nav item
@@ -622,7 +631,7 @@ one commit that a restarted server still has.
 Both end with their own count:
 
 ```
-  324 passed, 0 failed
+  377 passed, 0 failed
   295 passed, 0 failed
 ```
 
@@ -836,6 +845,11 @@ QA_Report_Studio/
 ├── tests.py                Engine checks      (python tests.py)
 ├── tests_ui.py             Interface checks   (python tests_ui.py)
 ├── fake_github.py          Stand-in for GitHub's API, used by both test suites
+├── agent/                  Everything needed to rebuild this tool as an Omni agent
+│   ├── README.md           The step-by-step procedure
+│   ├── 1_…5_*.txt          The text for each Agent Builder section
+│   ├── Rulebook.txt        The rules in full, as an attachment for the agent
+│   └── build_pack.py       Builds the agent's history and test answers from the library
 ├── requirements.txt
 ├── .gitignore              keeps client data out of version control
 ├── run_windows.bat         Windows launcher
@@ -850,7 +864,8 @@ QA_Report_Studio/
     │   ├── India/          Jul-Sep 2026 sheets, then imports
     │   └── Japan/          Jan-Jun 2026 as issued, Jul-Sep 2026 sheets, then imports
     ├── publish.py          Optional: commits the library back to GitHub
-    ├── theme.py            Design system — palette, tokens and the app stylesheet
+    ├── theme.py            The app's design system — palette, tokens and stylesheet
+    ├── report_theme.py     The report's palette — white pages, one navy accent
     ├── store.py            Atomic JSON persistence
     ├── normalize.py        Name, status, category and severity cleaning
     ├── ingest.py           Excel / CSV / PPTX readers, month detection
@@ -867,3 +882,9 @@ identical rather than merely similar.
 The PPTX and the PDF are drawn independently from the same palette, the same
 chart images and the same metrics, at the same 13.333 × 7.5in page — so they
 look the same, and the PDF does not need PowerPoint or LibreOffice installed.
+
+**The report is white.** `report_theme.py` gives it white pages, near-black
+type, hairline rules and a single navy accent; colour is kept for what it means
+(green for error free, red for defects, gold for a score to watch). There is no
+orange in it and no banner of brand colour. The app's own screens are styled
+separately by `theme.py`, so changing one never changes the other.

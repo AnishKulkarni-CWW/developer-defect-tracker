@@ -21,7 +21,7 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
 
-from . import charts, metrics, theme as T
+from . import charts, metrics, report_theme as T
 
 PAGE_W = 13.333 * 72
 PAGE_H = 7.5 * 72
@@ -89,9 +89,10 @@ class Page:
             self.text(x, top + i * leading, ln, size, bold, color, align, w)
         return len(lines) * leading
 
-    def bar(self, x, top, w, label, h=26, fill=T.NAVY, size=9.5):
+    def bar(self, x, top, w, label, h=26, fill=T.ACCENT_SOFT, size=9.5):
+        # A panel's heading: the label in the accent on a quiet tinted strip.
         self.rect(x, top, w, h, fill=fill, line=None, radius=6)
-        self.text(x, top + (h - size) / 2 - 0.5, label.upper(), size, True, T.WHITE, "c", w)
+        self.text(x, top + (h - size) / 2 - 0.5, label.upper(), size, True, T.ACCENT, "c", w)
 
     def image(self, png, x, top, w, h=None):
         img = ImageReader(io.BytesIO(png))
@@ -132,22 +133,25 @@ class Page:
         tot = sum(col_w)
         widths = [w * cwi / tot for cwi in col_w]
 
-        self.rect(x, top, w, header_h, fill=T.NAVY, line=None, radius=0)
+        self.rect(x, top, w, header_h, fill=T.FILL, line=None, radius=0)
         cx = x
         for j, htxt in enumerate(headers):
             self.text(cx + pad, top + (header_h - head_font) / 2 - 0.5,
                       _fit(str(htxt), HEAD, head_font, widths[j] - pad * 2),
-                      head_font, True, T.WHITE, "c" if j else "l", widths[j] - pad * 2)
+                      head_font, True, T.INK, "c" if j else "l", widths[j] - pad * 2)
             cx += widths[j]
 
         for i, row in enumerate(rows):
             ry = top + header_h + i * row_h
-            self.rect(x, ry, w, row_h, fill=T.WHITE if i % 2 == 0 else T.ROW_ALT,
+            # A totals row is bold on the header's tint — see deck.Kit.table.
+            total = bool(row) and str(row[0]).strip() in ("Total", "Grand Total")
+            self.rect(x, ry, w, row_h,
+                      fill=T.FILL if total else (T.WHITE if i % 2 == 0 else T.ROW_ALT),
                       line=None, radius=0)
             cx = x
             for j, val in enumerate(row):
                 col = (cell_colors or {}).get((i, j), T.TEXT)
-                bold = j == 0 or col != T.TEXT
+                bold = total or j == 0 or col != T.TEXT
                 txt = _fit("" if val is None else str(val), HEAD if bold else BODY,
                            font, widths[j] - pad * 2)
                 self.text(cx + pad, ry + (row_h - font) / 2 - 0.5, txt, font, bold, col,
@@ -161,9 +165,17 @@ class Page:
         return h
 
     def head(self, eyebrow, title):
-        self.rect(0, 0, PAGE_W, 0.90 * 72, fill=T.NAVY, line=None, radius=0)
-        self.text(MARGIN, 9, eyebrow.upper(), 8, True, "8FB3E8")
-        self.text(MARGIN, 25, title, 17, True, T.WHITE)
+        # No banner: the title sits on the white page over a hairline, with a
+        # short accent rule to anchor it. Mirrors deck.Kit.head.
+        self.text(MARGIN, 10, eyebrow.upper(), 8, True, T.ACCENT)
+        self.text(MARGIN, 26, title, 17, True, T.INK)
+        self.rule(MARGIN, 0.90 * 72, PAGE_W - MARGIN * 2)
+
+    def rule(self, x, top, w, accent=1.1 * 72):
+        """A hairline across `w`, with a short accent segment at its start."""
+        self.rect(x, top, w, 0.9, fill=T.BORDER, line=None, radius=0)
+        if accent:
+            self.rect(x, top - 1.6, accent, 2.5, fill=T.ACCENT, line=None, radius=0)
 
     def footer(self, left, right=""):
         self.text(MARGIN, PAGE_H - 22, left, 7.2, False, T.TEXT_MUTED)
@@ -225,11 +237,11 @@ def build_pdf(sel, options):
         fn(*args)
         cv.showPage()
 
-    page(_title_page, p, org, market, period, tot, o, bg=T.NAVY)
+    page(_title_page, p, org, market, period, tot, o)
     monthly = o.get("include_monthly", True) and bool(rows)
     if monthly:
         for i, r in enumerate(rows, 1):
-            page(_month_divider, p, r, market, org, i, len(rows), bg=T.NAVY)
+            page(_month_divider, p, r, market, org, i, len(rows))
             page(_month_score, p, sel, r, market, foot)
             page(_month_devs, p, sel, r, market, foot)
             page(_month_defects, p, sel, r, market, foot)
@@ -239,7 +251,7 @@ def build_pdf(sel, options):
     # the monthly pages are actually present — with them switched off, the
     # consolidated view is the entire report. Matches deck.build_deck.
     if not (monthly and len(rows) == 1):
-        page(_period_divider, p, tot, market, org, period, len(rows), bg=T.NAVY)
+        page(_period_divider, p, tot, market, org, period, len(rows))
         if o.get("include_summary", True):
             page(_qa_summary, p, sel, tot, rows, market, org, period, foot)
         if o.get("include_developer", True):
@@ -258,7 +270,7 @@ def build_pdf(sel, options):
             page(_recs_page, p, sel, market, org, period, foot, o.get("notes"))
     if o.get("include_dashboard", True):
         page(_dashboard_page, p, sel, tot, rows, market, period, foot)
-    page(_closing_page, p, org, market, period, tot, bg=T.NAVY)
+    page(_closing_page, p, org, market, period, tot)
 
     cv.save()
     buf.seek(0)
@@ -274,49 +286,54 @@ IN = 72.0
 
 
 # --------------------------------------------------------------------------
+def _spine(p):
+    """The one piece of colour on a cover or divider: a slim accent spine."""
+    p.rect(0, 0, 0.22 * IN, PAGE_H, fill=T.ACCENT, line=None, radius=0)
+
+
 def _title_page(p, org, market, period, tot, o):
-    p.rect(0, 4.15 * IN, PAGE_W, PAGE_H - 4.15 * IN, fill=T.NAVY_DK, line=None, radius=0)
+    _spine(p)
     x = 1.0 * IN
-    p.text(x, 1.70 * IN, _brand(org, market).upper(), 14, True, "8FB3E8")
-    p.text(x, 2.20 * IN, "Quality Assurance Report", 40, True, T.WHITE)
-    p.rect(x, 3.55 * IN, 1.7 * IN, 4, fill=T.BLUE, line=None, radius=0)
-    p.text(x, 3.80 * IN, period, 18, False, "C6D4EC")
+    p.text(x, 1.60 * IN, _brand(org, market).upper(), 14, True, T.ACCENT)
+    p.text(x, 2.10 * IN, "Quality Assurance Report", 40, True, T.INK)
+    p.rect(x, 3.45 * IN, 1.7 * IN, 4, fill=T.ACCENT, line=None, radius=0)
+    p.text(x, 3.70 * IN, period, 18, False, T.TEXT_MUTED)
     tiles = [(f"{tot['total_tasks']:,}", "Tasks Audited"), (FS(tot["score"]), "Quality Score"),
              (f"{tot['error_tasks']:,}", "Total Defects"), (f"{tot['developers']}", "Developers")]
     tw, gap = 2.42 * IN, 0.28 * IN
     for i, (v, lbl) in enumerate(tiles):
         tx = x + i * (tw + gap)
-        p.rect(tx, 4.62 * IN, tw, 1.02 * IN, fill="0B265E", line="1E4488", radius=7)
-        p.text(tx, 4.75 * IN, v, 19, True, T.WHITE, "c", tw)
-        p.text(tx, 5.17 * IN, lbl.upper(), 7.4, True, "9FBAE4", "c", tw)
+        p.rect(tx, 4.62 * IN, tw, 1.02 * IN, fill=T.WHITE, line=T.BORDER, radius=7)
+        p.text(tx, 4.83 * IN, v, 19, True, T.INK, "c", tw)
+        p.text(tx, 5.25 * IN, lbl.upper(), 7.4, True, T.TEXT_MUTED, "c", tw)
     by = o.get("prepared_by") or ""
     stamp = datetime.now().strftime("%d %b %Y")
     p.text(x, 6.12 * IN, f"Prepared by {by}  \u2022  {stamp}" if by else f"Generated {stamp}",
-           9.5, False, "7E9AC8")
+           9.5, False, T.TEXT_MUTED)
 
 
 def _month_divider(p, r, market, org, idx, total):
-    p.rect(0, 0, 0.22 * IN, PAGE_H, fill=T.BLUE, line=None, radius=0)
+    _spine(p)
     x = 1.2 * IN
     p.text(x, 2.35 * IN, f"{_brand(org, market).upper()}  \u2022  MONTH {idx} OF {total}",
-           13, True, "8FB3E8")
-    p.text(x, 2.85 * IN, r["month_name"].upper(), 56, True, T.WHITE)
-    p.text(x, 4.00 * IN, str(r["year"]), 34, True, T.BLUE)
-    p.rect(x, 4.85 * IN, 1.7 * IN, 4, fill=T.BLUE, line=None, radius=0)
+           13, True, T.ACCENT)
+    p.text(x, 2.85 * IN, r["month_name"].upper(), 56, True, T.INK)
+    p.text(x, 4.00 * IN, str(r["year"]), 34, True, T.ACCENT)
+    p.rect(x, 4.85 * IN, 1.7 * IN, 4, fill=T.ACCENT, line=None, radius=0)
     p.text(x, 5.10 * IN, f"{r['total']:,} tasks audited   \u2022   {r['error']} defect(s)   "
-                         f"\u2022   {FS(r['score'])} quality score", 14, False, "C6D4EC")
+                         f"\u2022   {FS(r['score'])} quality score", 14, False, T.TEXT_MUTED)
 
 
 def _period_divider(p, tot, market, org, period, n_months):
-    p.rect(0, 0, 0.22 * IN, PAGE_H, fill=T.GREEN, line=None, radius=0)
+    _spine(p)
     x = 1.2 * IN
-    p.text(x, 2.45 * IN, _brand(org, market).upper(), 13, True, "8FB3E8")
-    p.text(x, 2.95 * IN, "CONSOLIDATED SUMMARY", 42, True, T.WHITE)
-    p.text(x, 4.05 * IN, period, 26, True, T.BLUE)
-    p.rect(x, 4.85 * IN, 1.7 * IN, 4, fill=T.GREEN, line=None, radius=0)
+    p.text(x, 2.45 * IN, _brand(org, market).upper(), 13, True, T.ACCENT)
+    p.text(x, 2.95 * IN, "CONSOLIDATED SUMMARY", 42, True, T.INK)
+    p.text(x, 4.05 * IN, period, 26, True, T.ACCENT)
+    p.rect(x, 4.85 * IN, 1.7 * IN, 4, fill=T.ACCENT, line=None, radius=0)
     p.text(x, 5.10 * IN, f"All {n_months} month(s) combined   \u2022   {tot['total_tasks']:,} "
                          f"tasks   \u2022   {FS(tot['score'])} overall quality score",
-           14, False, "C6D4EC")
+           14, False, T.TEXT_MUTED)
 
 
 def _kpi_strip(p, tiles, top=1.10 * IN, h=1.05 * IN):
@@ -366,7 +383,7 @@ def _month_score(p, sel, r, market, foot):
     ch = max(120.0, min(3.2 * IN, rw - 40, ph - 42 - note_h - 22))
     cw = min(rw - 40, ch / 0.92)
     p.image(charts.composition_pie(r["total"], r["error"], r["no_error"], r["observation"],
-                                   w=cw / IN, h=ch / IN), rx + (rw - cw) / 2, py + 42, cw)
+                                   w=cw / IN, h=ch / IN, pal=T), rx + (rw - cw) / 2, py + 42, cw)
     ty = py + 42 + ch + 8
     p.text(rx + 22, ty, "Reading this chart", 11.5, True, T.NAVY)
     p.para(rx + 22, ty + 19, rw - 44,
@@ -439,7 +456,7 @@ def _month_defects(p, sel, r, market, foot):
         text_h = 140
         dh = max(140.0, min(3.4 * IN, rw - 22, ph - 44 - text_h))
         p.image(charts.category_donut(cats[:6], w=dh / IN, h=dh / IN,
-                                      centre_total=r["error"]),
+                                      centre_total=r["error"], pal=T),
                 rx + (rw - dh) / 2, py + 44, dh)
         ty = py + 44 + dh + 10
         p.text(rx + 18, ty, f"{ti} on test links", 12, True, T.BRAND)
@@ -479,7 +496,7 @@ def _qa_summary(p, sel, tot, rows, market, org, period, foot):
     rw = PAGE_W - MARGIN - rx
     p.rect(rx, py, rw, ph)
     p.bar(rx + 10, py + 10, rw - 20, "Quality Score by Month", 24, size=10)
-    p.image(charts.quality_trend(rows, w=(rw - 28) / IN, h=2.6),
+    p.image(charts.quality_trend(rows, w=(rw - 28) / IN, h=2.6, pal=T),
             rx + 14, py + 48, rw - 28)
     mb = [(r["label"], r["total"], r["error"], r["error_free"], FS(r["score"])) for r in rows]
     colors = {(i, 4): T.score_color(r["score"]) for i, r in enumerate(rows)}
@@ -545,11 +562,11 @@ def _category_page(p, sel, tot, market, org, period, foot):
         dh = max(140.0, min(3.3 * IN, rw - 22,
                             ph - 44 - 8 - bar_h - 8 - chart_h - 10))
         p.image(charts.category_donut(cats[:7], w=dh / IN, h=dh / IN,
-                                      centre_total=tot["error_tasks"]),
+                                      centre_total=tot["error_tasks"], pal=T),
                 rx + (rw - dh) / 2, py + 44, dh)
         by = py + 44 + dh + 8
         p.bar(rx + 10, by, rw - 20, "Test vs Live Links", bar_h, size=9)
-        p.image(charts.internal_external(ti, te, w=(rw - 36) / IN, h=chart_h / IN),
+        p.image(charts.internal_external(ti, te, w=(rw - 36) / IN, h=chart_h / IN, pal=T),
                 rx + 18, by + bar_h + 8, rw - 36)
     p.footer(foot, "Defect categories")
 
@@ -562,7 +579,8 @@ def _aging_page(p, sel, market, org, period, foot):
     p.rect(MARGIN, py, lw, ph)
     p.bar(MARGIN + 10, py + 10, lw - 20, "Defect age distribution", 24, size=10)
     if rows and any(r["count"] for r in rows):
-        p.image(charts.aging_bar(rows, w=(lw - 44) / IN, h=2.7), MARGIN + 22, py + 48, lw - 44)
+        p.image(charts.aging_bar(rows, w=(lw - 44) / IN, h=2.7, pal=T),
+                MARGIN + 22, py + 48, lw - 44)
         body = [(r["bucket"], r["count"], f"{r['pct']:.2f}%") for r in rows]
         p.table(MARGIN + 14, py + 258, lw - 28, ["Age Bucket", "Defects", "% of Defects"],
                 body, col_w=[2.2, 1.0, 1.2], row_h=26, font=11, max_h=ph - 274)
@@ -632,7 +650,7 @@ def _recs_page(p, sel, market, org, period, foot, note):
     for i, rec in enumerate(recs):
         cx = MARGIN + 14 + (i // per_col) * (cw + 18)
         cy = py + 48 + (i % per_col) * (rh + 6)
-        p.rect(cx, cy, cw, rh, fill=T.PAGE_BG, line=T.BORDER, radius=5)
+        p.rect(cx, cy, cw, rh, fill=T.ROW_ALT, line=T.BORDER, radius=5)
         col = [T.BLUE, T.ORANGE, T.RED, T.PURPLE, T.TEAL, T.GREEN][i % 6]
         p.icon(rec["icon"], col, cx + 12, cy + 13, 26)
         p.text(cx + 48, cy + 13, _fit(rec["title"], HEAD, 12, cw - 62), 12, True, T.NAVY)
@@ -643,9 +661,11 @@ def _recs_page(p, sel, market, org, period, foot, note):
 
 
 def _dashboard_page(p, sel, tot, rows, market, period, foot):
-    p.rect(0, 0, PAGE_W, 0.82 * IN, fill=T.NAVY, line=None, radius=0)
     p.text(0, 0.24 * IN, f"{market.upper()} QA SUMMARY REPORT  \u2022  {period.upper()}",
-           20, True, T.WHITE, "c", PAGE_W)
+           20, True, T.INK, "c", PAGE_W)
+    p.rule(MARGIN, 0.80 * IN, PAGE_W - MARGIN * 2, accent=0)
+    p.rect((PAGE_W - 1.7 * IN) / 2, 0.80 * IN - 1.6, 1.7 * IN, 2.5, fill=T.ACCENT, line=None,
+           radius=0)
     kpis = [(f"{tot['total_tasks']:,}", "Total Tasks Audited", T.BLUE, "clipboard", None),
             (f"{tot['error_free']:,}", "Error Free Tasks", T.GREEN, "check", None),
             (f"{tot['observations']:,}", "Observations", T.TEAL, "clipboard", "in error free"),
@@ -670,7 +690,7 @@ def _dashboard_page(p, sel, tot, rows, market, period, foot):
     p.rect(p1x, py, p1w, ph)
     p.bar(p1x + 7, py + 7, p1w - 14, "Quality Score Trend (Monthly)", 22, size=9)
     _ch = (ph - 44) - 36 - 8
-    p.image(charts.quality_trend(rows, w=(p1w - 22) / IN, h=_ch / IN),
+    p.image(charts.quality_trend(rows, w=(p1w - 22) / IN, h=_ch / IN, pal=T),
             p1x + 11, py + 36, p1w - 22, _ch)
     scored = [r for r in rows if r["score"] is not None]
     if scored:
@@ -684,7 +704,7 @@ def _dashboard_page(p, sel, tot, rows, market, period, foot):
         for i, (col, lbl, val) in enumerate(band):
             bx = p1x + 11 + i * (bw + 6)
             byy = py + ph - 44
-            p.rect(bx, byy, bw, 36, fill=T.PAGE_BG, line=T.BORDER, radius=5)
+            p.rect(bx, byy, bw, 36, fill=T.ROW_ALT, line=T.BORDER, radius=5)
             p.text(bx + 6, byy + 7, lbl, 5.8, True, col)
             p.text(bx + 6, byy + 19, _fit(val, HEAD, 7.2, bw - 12), 7.2, True, T.TEXT)
 
@@ -693,7 +713,7 @@ def _dashboard_page(p, sel, tot, rows, market, period, foot):
     cats = metrics.category_table(sel)
     if cats:
         p.image(charts.category_donut(cats[:6], w=1.70, h=1.70,
-                                      centre_total=tot["error_tasks"]),
+                                      centre_total=tot["error_tasks"], pal=T),
                 p2x + 20, py + 40, 1.70 * IN)
         body = [(c["category"], c["total"], f"{c['pct']:.2f}%") for c in cats[:7]]
         colors = {(i, 0): T.CATEGORY_COLORS.get(c["category"], T.TEXT)
@@ -710,7 +730,7 @@ def _dashboard_page(p, sel, tot, rows, market, period, foot):
     rh = (ph - 54) / 3
     for i, d in enumerate(top):
         yy = py + 38 + i * rh
-        p.image(charts.rank_badge(i + 1), p3x + 13, yy + (rh - 36) / 2, 36, 36)
+        p.image(charts.rank_badge(i + 1, pal=T), p3x + 13, yy + (rh - 36) / 2, 36, 36)
         p.text(p3x + 56, yy + 3, _fit(d["name"], HEAD, 10.5, p3w - 68), 10.5, True, T.BLUE)
         p.text(p3x + 56, yy + 20, f"{d['total']} tasks   \u2022   {d['error_free']} error free",
                7.8, False, T.TEXT_MUTED)
@@ -739,11 +759,12 @@ def _dashboard_page(p, sel, tot, rows, market, period, foot):
 
 
 def _closing_page(p, org, market, period, tot):
-    p.text(0, 2.75 * IN, "Thank You", 42, True, T.WHITE, "c", PAGE_W)
-    p.rect((PAGE_W - 1.7 * IN) / 2, 3.78 * IN, 1.7 * IN, 4, fill=T.BLUE, line=None, radius=0)
+    _spine(p)
+    p.text(0, 2.75 * IN, "Thank You", 42, True, T.INK, "c", PAGE_W)
+    p.rect((PAGE_W - 1.7 * IN) / 2, 3.78 * IN, 1.7 * IN, 4, fill=T.ACCENT, line=None, radius=0)
     p.text(0, 4.08 * IN, f"{_brand(org, market)} Quality Assurance  \u2022  {period}", 13,
-           False, "C6D4EC", "c", PAGE_W)
+           False, T.TEXT, "c", PAGE_W)
     if tot["score"] is not None:
         p.text(0, 4.62 * IN, f"{tot['total_tasks']:,} tasks audited  \u2022  "
                              f"{FS(tot['score'])} overall quality score",
-               10.5, False, "7E9AC8", "c", PAGE_W)
+               10.5, False, T.TEXT_MUTED, "c", PAGE_W)

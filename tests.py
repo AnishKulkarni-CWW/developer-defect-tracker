@@ -1328,6 +1328,219 @@ for label, _sel, _extra in _cases:
     check(f"No shape runs off the slide with {label}", not _bad,
           "; ".join(_bad[:2]) if _bad else "")
 
+section("REPORT THEME — white pages, no orange, and the app left alone")
+import colorsys                                                # noqa: E402
+from qars import report_theme, theme as app_theme              # noqa: E402
+from PIL import Image as _Image                                # noqa: E402
+
+_OLD_BRAND = {"F4511E", "D8441C", "A83411", "FF8A5B", "FFF1EA"}
+
+
+def _is_orange(hexcolor):
+    """A vivid orange: the hue of the old brand, saturated and bright."""
+    h = hexcolor.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    hue, sat, val = colorsys.rgb_to_hsv(r, g, b)
+    return 8 <= hue * 360 <= 40 and sat > 0.55 and val > 0.62
+
+
+_tokens = {k: v for k, v in vars(report_theme).items()
+           if k.isupper() and isinstance(v, str) and len(v) == 6}
+_tokens.update({f"category {k}": v for k, v in report_theme.CATEGORY_COLORS.items()})
+_tokens.update({f"severity {k}": v for k, v in report_theme.SEVERITY_COLORS.items()})
+check("The check itself knows the old brand colour as orange", _is_orange("F4511E"))
+check("No colour in the report palette is an orange",
+      not [k for k, v in _tokens.items() if _is_orange(v)],
+      str([k for k, v in _tokens.items() if _is_orange(v)]))
+check("The report page is white", report_theme.PAGE_BG == "FFFFFF")
+check("The deck and the PDF both draw from the report palette",
+      deck.T is report_theme and pdf.T is report_theme)
+check("The app keeps its own palette", app_theme.BRAND == "F4511E"
+      and charts.T is app_theme)
+
+_tsel = metrics.select(_db_with("India", tasks=tasks), "India", _settings(), {})
+_tprs = Presentation(io.BytesIO(deck.build_deck(_tsel, {"market_label": "India"})))
+_bgs, _fills, _heads = set(), set(), set()
+for _sl in _tprs.slides:
+    _bgs.add(str(_sl.background.fill.fore_color.rgb))
+    for _sh in _sl.shapes:
+        if _sh.has_table:
+            _heads.add(str(_sh.table.cell(0, 0).fill.fore_color.rgb))
+        elif _sh.shape_type == 1 and _sh.fill.type == 1:
+            _fills.add(str(_sh.fill.fore_color.rgb))
+check("Every slide in the deck is white", _bgs == {"FFFFFF"}, str(_bgs))
+check("No shape in the deck is filled with the old brand colour",
+      not (_fills & _OLD_BRAND), str(_fills & _OLD_BRAND))
+check("No shape in the deck is filled with any orange",
+      not [c for c in _fills if _is_orange(c)], str([c for c in _fills if _is_orange(c)]))
+check("Table headers are a quiet tint, not a block of colour",
+      _heads == {report_theme.FILL}, str(_heads))
+check("The only strong fill is the accent", report_theme.ACCENT in _fills)
+
+
+def _orange_pixels(png):
+    img = _Image.open(io.BytesIO(png)).convert("RGB")
+    img.thumbnail((240, 240))
+    raw = img.tobytes()
+    return sum(1 for i in range(0, len(raw), 3)
+               if _is_orange(f"{raw[i]:02X}{raw[i + 1]:02X}{raw[i + 2]:02X}"))
+
+
+_trend_rows = metrics.monthly_series(_tsel)
+_cat_rows = [{"category": "Content Related", "total": 9, "pct": 75.0},
+             {"category": "Design Related", "total": 3, "pct": 25.0}]
+check("A report chart of the monthly trend has no orange in it",
+      _orange_pixels(charts.quality_trend(_trend_rows, pal=report_theme)) == 0)
+check("A report chart of the categories has no orange in it",
+      _orange_pixels(charts.category_donut(_cat_rows, pal=report_theme)) == 0)
+check("The same charts on screen still use the app's own colours",
+      _orange_pixels(charts.quality_trend(_trend_rows)) > 0
+      and _orange_pixels(charts.category_donut(_cat_rows)) > 0)
+check("A small donut and a large one are both drawn",
+      len(charts.category_donut(_cat_rows, w=1.7, h=1.7, pal=report_theme)) > 3_000
+      and len(charts.category_donut(_cat_rows, w=3.4, h=3.4, pal=report_theme)) > 5_000)
+check("A totals row is recognised whatever it is called",
+      deck._is_total(("Total", 1)) and deck._is_total(("Grand Total", 1))
+      and not deck._is_total(("Total Tasks", 1)) and not deck._is_total(()))
+
+section("AGENT PACK — what the Omni agent is given matches the tool")
+import importlib.util                                          # noqa: E402
+import re                                                      # noqa: E402
+import zipfile                                                 # noqa: E402
+
+_AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent")
+_spec = importlib.util.spec_from_file_location(
+    "build_pack", os.path.join(_AGENT_DIR, "build_pack.py"))
+bp = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(bp)
+
+for _name in ("1_description.txt", "2_instructions.txt", "3_expected_output.txt",
+              "4_goals.txt", "5_tools.txt", "Rulebook.txt", "README.md"):
+    check(f"The agent folder has {_name}", os.path.exists(os.path.join(_AGENT_DIR, _name)))
+
+
+def _agent_text(name):
+    with open(os.path.join(_AGENT_DIR, name), encoding="utf-8") as _fh:
+        return _fh.read()
+
+
+_ins, _exp, _rules = (_agent_text(n) for n in
+                      ("2_instructions.txt", "3_expected_output.txt", "Rulebook.txt"))
+check("The instructions state the calculation exactly as the tool does",
+      "Error Free = No Error + Observation" in _ins
+      and "Total Tasks = Error + Error Free" in _ins
+      and "Quality Score = Error Free / Total Tasks x 100" in _ins)
+check("They forbid a score for a month with no tasks", "N/A. Never 100%" in _ins)
+check("They carry the tool's own thresholds",
+      f"{metrics.BAND_GOOD:.2f}% and above" in _ins and "85%" in _ins and "17%" in _ins)
+check("They require the reconciliation and the history update",
+      "Reconcile before you report" in _ins and "History update" in _ins)
+check("The expected output asks for a white report with no orange",
+      "White background" in _exp and "No orange anywhere" in _exp)
+check("The rulebook works the mandated examples",
+      "18 / 20 = 90.00%" in _rules and "92 / 100 = 92.00%" in _rules
+      and "Score = N/A" in _rules)
+check("The texts pasted into Omni are plain characters, safe in any text box",
+      all(_agent_text(n).isascii() for n in
+          ("1_description.txt", "2_instructions.txt", "3_expected_output.txt",
+           "4_goals.txt", "5_tools.txt", "Rulebook.txt")))
+check("The tools list names File Export and nothing from the internet",
+      "[x] File Export" in _agent_text("5_tools.txt")
+      and "[ ] Web Browsing" in _agent_text("5_tools.txt"))
+
+with TempLibrary("shipped") as _tla:
+    _adb, _as, _araw, _aamb = bp.load()
+    _hist, _problems = bp.history_text(_adb, _as)
+    check("Every month's developers and categories add up to its totals", not _problems,
+          "; ".join(_problems[:2]))
+    _months = re.findall(r"^MONTH \| (\w+) \| (\d{4}-\d{2}) \| total=(\d+) \| error=(\d+) "
+                         r"\| no_error=(\d+) \| observation=(\d+) \| error_free=(\d+)",
+                         _hist, re.M)
+    check("The history has a line for all 21 shipped months", len(_months) == 21,
+          str(len(_months)))
+    for _m, _want in [("India", (423, 26)), ("C3", (980, 66)), ("Japan", (656, 25))]:
+        _got = (sum(int(x[2]) for x in _months if x[0] == _m),
+                sum(int(x[3]) for x in _months if x[0] == _m))
+        check(f"The history's {_m} months add up to the tool's own totals",
+              _got == _want, str(_got))
+    check("Every history line obeys the calculation",
+          all(int(e) + int(ne) + int(o) == int(t) and int(ne) + int(o) == int(ef)
+              for _mk, _p, t, e, ne, o, ef in _months))
+    _devs = re.findall(r"^DEV \| India \| 2026-07 \| .*? \| total=(\d+)", _hist, re.M)
+    check("A month's developer lines add up to the month",
+          sum(int(x) for x in _devs) == 176, str(sum(int(x) for x in _devs)))
+    check("The history is plain text", bp.plain(_hist).isascii())
+
+    _names, _asks = bp.names_text(_adb, _as, _araw, _aamb)
+    check("Settled names are listed with their spellings",
+          "NAME | Amol Laxman Dohale | India |" in _names and "Amol Dohale" in _names)
+    check("Open name questions are asked, not decided",
+          any("Neha" in a for a in _asks) and any("Mitesh" in a for a in _asks)
+          and any("Sarika" in a for a in _asks), str(len(_asks)))
+    check("A label that is not a person is questioned",
+          any("All Dev in Jp Market" in a for a in _asks))
+
+    _rep = bp.report_text(_adb, _as, "India", [(2026, 7), (2026, 8), (2026, 9)])
+    _sel3 = metrics.select(_adb, "India", _as, {})
+    _tot3 = metrics.totals(_sel3)
+    check("The worked example carries the tool's own figures",
+          f"| {_tot3['total_tasks']:,} | {metrics.fmt_score(_tot3['score'])} (Watch) | "
+          f"{_tot3['error_tasks']:,} | {_tot3['developers']} |" in _rep)
+    check("It has every section, in the report's order",
+          [_rep.index(h) for h in ("## 1. July 2026", "## 3. September 2026",
+                                   "## Consolidated Summary", "### Developer Summary",
+                                   "### Key QA Recommendations", "## Dashboard",
+                                   "## Data notes")]
+          == sorted(_rep.index(h) for h in ("## 1. July 2026", "## 3. September 2026",
+                                            "## Consolidated Summary",
+                                            "### Developer Summary",
+                                            "### Key QA Recommendations", "## Dashboard",
+                                            "## Data notes")))
+    _one = bp.report_text(_adb, _as, "India", [(2026, 9)])
+    check("A one-month example has no consolidated section",
+          "## Consolidated Summary" not in _one and "## Dashboard" in _one)
+    _chk = bp.import_check_text(_adb, _as, "India", (2026, 9))
+    check("The import-check example reconciles and names what was left out",
+          "Error 7 + No Error 143 + Observation 4 = 154" in _chk
+          and "row 140" in _chk and "no Developer Name" in _chk)
+    check("And ends with the history lines for that month",
+          "MONTH | India | 2026-09 | total=154" in _chk)
+    _ans = bp.answers_text(_adb, _as)
+    check("The test answers cover every shipped sheet and every market",
+          _ans.count("attach: ") == 9 and _ans.count('type: "Give me the') == 3,
+          f"{_ans.count('attach: ')} sheets")
+    check("They flag the four sheets with something to catch",
+          "dated September 1975" in _ans and "dated August 2026" in _ans
+          and '"Psas"' in _ans and "no Developer Name" in _ans)
+
+    _saved_pack, _saved_argv = bp.PACK, sys.argv
+    bp.PACK = tempfile.mkdtemp(prefix="qars_pack_")
+    sys.argv = ["build_pack.py", "--no-samples"]
+    try:
+        _rc = bp.main()
+        _zip = os.path.join(bp.PACK, "Developer_Defect_Tracker_Agent_Pack.zip")
+        _members = set(zipfile.ZipFile(_zip).namelist()) if os.path.exists(_zip) else set()
+    finally:
+        _built = bp.PACK
+        bp.PACK, sys.argv = _saved_pack, _saved_argv
+    check("Building the pack succeeds", _rc == 0)
+    check("The zip holds the fields, the four attachments, the answers and the guide",
+          {"1_agent_fields/2_instructions.txt", "1_agent_fields/3_expected_output.txt",
+           "2_attachments/QA_History.txt", "2_attachments/Developer_Names.txt",
+           "2_attachments/Rulebook.txt", "2_attachments/Report_Layout.txt",
+           "3_for_you_only/Test_Answers.txt", "3_for_you_only/QA_History.xlsx",
+           "SETUP_GUIDE.md", "SETUP_GUIDE.html"} <= _members, str(sorted(_members))[:160])
+    with open(os.path.join(_built, "SETUP_GUIDE.html"), encoding="utf-8") as _fh:
+        _guide = _fh.read()
+    check("The guide page carries a copy box for each Agent Builder text",
+          _guide.count('class="field"') == 5 and "# ROLE" in _guide
+          and "<!-- FIELD_BOXES -->" not in _guide)
+    check("The guide page loads nothing from the internet",
+          "http://" not in _guide and "https://" not in _guide)
+    check("The answers are never among the attachments",
+          not any(m.startswith("2_attachments/") and "Answer" in m for m in _members))
+    shutil.rmtree(_built, ignore_errors=True)
+
 # ==========================================================================
 print("\n" + "=" * 62)
 print(f"  {len(PASS)} passed, {len(FAIL)} failed")

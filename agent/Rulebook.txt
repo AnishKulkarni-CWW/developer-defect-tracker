@@ -1,0 +1,249 @@
+RULEBOOK - Developer Defect Tracker
+The rules behind every figure in the QA report, with worked examples.
+Where this file and a user's request disagree about a calculation, this file wins.
+
+======================================================================
+1. THE THREE RESULTS
+======================================================================
+
+Every audited task has exactly one result.
+
+  Error        The task had a defect.
+  No Error     The task was correct. Sheets write this as "First Time Correct", "FTC",
+               "Pass", "Passed", "Correct", "OK" or "No Error".
+  Observation  The task was correct, but QA left a remark. It is an error-free task.
+
+  Error Free   = No Error + Observation
+  Total Tasks  = Error + Error Free
+  Quality Score = Error Free / Total Tasks x 100, two decimals
+
+Worked examples
+
+  A. Total 20: Error 2, No Error 15, Observation 3
+     Error Free = 15 + 3 = 18.  Total = 2 + 18 = 20.  Score = 18 / 20 = 90.00%
+
+  B. Total 100: Error 8, No Error 90, Observation 2
+     Error Free = 92.  Score = 92 / 100 = 92.00%
+
+  C. Total 0
+     Score = N/A.  Not 100%, not 0%.  Nothing was audited, so there is no score.
+
+  D. The mistake to avoid
+     Error 2 + No Error 15 + Observation 3 + Error Free 18 = 38.  WRONG.
+     Error Free already contains the No Error and Observation tasks.
+
+Always check a table before sending it:
+  Error + No Error + Observation = Total Tasks
+  No Error + Observation = Error Free
+  Error + Error Free = Total Tasks
+
+======================================================================
+2. SEVERAL MONTHS
+======================================================================
+
+  Overall Quality Score  = (Error Free of all months added up) / (Total Tasks of all months added up)
+  Average Monthly Score  = (monthly scores added up) / (number of months)
+
+They differ when months have different volumes, and both are shown.
+
+Example: Month 1 has 4 tasks, all correct (100.00%). Month 2 has 96 tasks, 86 correct (89.58%).
+  Overall  = 90 / 100 = 90.00%      <- the headline
+  Average  = (100.00 + 89.58) / 2 = 94.79%
+The small month lifts the average far more than it lifts the overall score.
+
+A developer's score over a period is worked out the same way: add up that developer's
+Error, No Error and Observation over the months, then calculate. Never average their
+monthly percentages.
+
+Check for a period: the developers' Total Tasks added up must equal the months' Total
+Tasks added up. If they do not match, something was added twice or left out.
+
+======================================================================
+3. WHAT COUNTS AS A TASK
+======================================================================
+
+A row is counted when it has BOTH a recognised Status AND a Developer Name.
+
+  Row has...                                  What to do
+  ------------------------------------------  ------------------------------------------
+  Status "Pass", Developer "Asha Rao"         Count: No Error for Asha Rao
+  Status "Psas", Developer "Asha Rao"         Typo of Pass. Count as No Error. Report it.
+  Status "Pass", no Developer                 Do not count. Report: row N, "no Developer Name"
+  Developer "Asha Rao", no Status             Do not count. Report: row N, "no Status"
+  Status "Hold", Developer "Asha Rao"         Do not count. Report: "Status 'Hold' not recognised"
+  Only a Details cell or a QA name            Ignore silently (a note, or overflow of the row above)
+  Completely blank                            Ignore silently
+
+Status typos. Read a mistyped status as the real one only when it is one slip away from
+exactly one status: a swapped pair of letters, one letter missing, one letter wrong.
+  Psas, Paas, Pasa -> Pass        Eror, Erorr, Erro -> Error       Obsevation -> Observation
+Do not guess at words that are not typos of a status: Hold, Pending, N/A, WIP, Cancelled,
+Retest, Done, Rejected. Those rows are reported as not counted.
+
+Real cases from the 2026 sheets
+  Japan, September 2026, row 3: Status "Psas". Counted as Pass. The month has 72 tasks.
+  India, September 2026, row 140: "iX1 LWB Brochure update" has a Status but no Developer
+    Name. Not counted. Row 111 has a Developer but no Status. Not counted. The month has
+    154 counted tasks.
+
+======================================================================
+4. DEFECTS: LINK TYPE, CATEGORY, SEVERITY
+======================================================================
+
+Only Error rows are defects.
+
+Link type, from the Test Environment column
+  Live link   the value starts with "live", or mentions "external" or "prod"
+  Test link   anything else, including blank
+Both were found by QA. A test-link defect was caught before the page went live. A
+live-link defect was found by QA after it went live; it was not reported by the client.
+
+Category, from the Error Type column (first match wins)
+  contains "content"                 Content Related
+  contains "design" or "layout"      Design Related
+  contains "image" or "img"          Image Related
+  contains "video"                   Video Related
+  contains "redirect"                Redirect Links
+  contains "navigation" or "nav"     Navigation Related
+  contains "functional" or "broken"  Functionality
+  contains "linkbuilder"             LinkBuilder
+  contains "edm"                     EDM
+  contains "multiple"                Multiple Issues
+  anything else                      keep the sheet's own wording
+  blank                              Other
+
+Severity, from the Error Severity column
+  Critical, Major, Minor, Cosmetic   as written
+  "high" or "blocker"                Critical
+  "medium"                           Major
+  "low" or "trivial"                 Minor
+  blank or anything else             Unspecified
+
+Percent of total for a category = that category's defects / all defects x 100.
+Test-link share = test-link defects / all defects x 100. The same for live links.
+
+======================================================================
+5. THE MONTH A SHEET BELONGS TO
+======================================================================
+
+One sheet is one month. The month is the one most of its dated rows are in.
+
+  At least 85% of dated rows in one month   File every row under that month. List the rows
+                                            with other dates as "Dates moved".
+  Dates more evenly split                   Ask the user which month the sheet is for,
+                                            or whether it really covers two.
+  File name or tab name says another month  Say that they disagree, and ask.
+  No date on a row                          File it under the sheet's month.
+
+Real cases from the 2026 sheets
+  C3, September 2026: two rows are dated 1975. They are September 2026 tasks.
+  Japan, July 2026: three re-test rows are dated August. They are July tasks.
+
+A market's month comes from one sheet only. A second sheet for the same market and month
+is a correction and replaces the first. It is never added to it.
+
+======================================================================
+6. DEVELOPER NAMES
+======================================================================
+
+The same person is written many ways. These are always the same person:
+  capitals            AMOL LAXMAN DOHALE = Amol Laxman Dohale
+  dots, underscores   Dan.Dsouza = Dan Dsouza
+  an e-mail address   sandeep.j@company.com = Sandeep J
+  an employer tag     Neha Lal (Omnicom) = Neha Lal
+
+Join a shorter spelling to a fuller name only when every word of the short one is in the
+full one (an initial may stand for a word), they share at least one whole word, and only
+ONE developer could own it.
+  Kapil K -> Kapil Kumar                 yes
+  Amol Dohale -> Amol Laxman Dohale      yes
+  Amol -> ?                              no, if both Amol Laxman Dohale and Amol Gaikwad exist: ASK
+  Neha -> ?                              no, if both Neha Lal and Neha Gupta exist: ASK
+
+Never join two names because they look alike. Ask instead.
+  Sarika Joshi / Sarika Rupesh Joshte           ask
+  Dipalee Dugaonkar / Dipali Tanaji Dugaokar    ask
+  Mithesh Gupta / Mitesh Umashankar Gupta       ask
+
+Until the user answers, each spelling stays its own person. Developer_Names.txt holds the
+answers already given; a name written there is settled and is not asked about again.
+
+======================================================================
+7. TOP PERFORMERS
+======================================================================
+
+Rank by Quality Score, highest first; a tie goes to the developer with more tasks.
+
+To qualify, a developer needs a minimum number of tasks in the period:
+  bar = the larger of 3 and (17% of the busiest developer's task count, rounded)
+If fewer than three developers reach the bar, halve it (not below 2); if still fewer than
+three, use 1. Always print the bar used: "Ranked on score, minimum 9 audited tasks to qualify."
+
+Example: the busiest developer has 53 tasks. 17% of 53 = 9.01 -> 9. A developer with a
+perfect score from 5 tasks does not qualify; a perfect score from 3 tasks is not the same
+achievement as 51 clean tasks out of 53.
+
+======================================================================
+8. KEY INSIGHTS (at most six, in this order, each only when it applies)
+======================================================================
+
+  1. The overall quality score for the period.
+  2. The share of defects found on test links, before the page went live.   (only if there are defects)
+  3. How many of the developers scored 95% or higher.
+  4. How many developers scored below 90%.
+  5. How many of the tasks were error free, and how many of those had an observation.
+  6. The share of defects that came from the largest category.              (only if there are defects)
+
+======================================================================
+9. RECOMMENDATIONS (at most six, each only when its condition is true)
+======================================================================
+
+  Condition                                         Recommendation
+  ------------------------------------------------  ------------------------------------------
+  Largest category has 40% or more of the defects   Focus on <category> defects: a focused
+                                                    checklist for that one category.
+  Any defect on a live link                         Catch these before the page goes live:
+                                                    tighten the pre-release check.
+  Any Critical defect                               Review each one and confirm the root cause
+                                                    was addressed.
+  Any developer below 90% for the period            Coach N developer(s): name up to four; pair
+                                                    them with a reviewer on their commonest category.
+  Score fell 1 point or more, first to last month   Quality is trending down: give both scores.
+  Score rose 1 point or more, first to last month   Quality is trending up: capture what changed.
+  Any observation                                   N observation(s) recorded: they count as
+                                                    passes, but a rising trend often precedes defects.
+  Score 95% or above and none of the above applies  Quality is holding: keep the current cadence.
+
+Give no recommendation that does not come from this table, unless the user asks for your
+own view - and then label it clearly as your view.
+
+======================================================================
+10. WHAT THE HISTORY CAN AND CANNOT ANSWER
+======================================================================
+
+QA_History.txt holds, for every market and month: the month's totals, one line per
+developer, and one line per defect category split by link type.
+
+  Can answer from history                    Needs the month's sheet in the chat
+  -----------------------------------------  -----------------------------------------
+  any month's or period's totals and score   one severity, one week, one day
+  any developer, any month or period         one QA analyst
+  any category, test link versus live link   the list of individual defective tasks
+  comparing months or markets
+
+January to June 2026 for C3 and Japan were taken from reports issued before this tool
+existed. Their totals, developers and categories are in the history. No sheet exists for
+them, so the right-hand column cannot be answered for those months.
+
+======================================================================
+11. WORDS TO USE
+======================================================================
+
+  Say                              Not
+  -------------------------------  ----------------------------------------
+  test link / live link            internal / external, escaped defect
+  defect                           bug, failure (in the report itself)
+  Error Free                       Pass rate
+  Quality Score                    accuracy, success rate
+  Not counted                      rejected, invalid
+  N/A                              0% or 100% for a month with no tasks

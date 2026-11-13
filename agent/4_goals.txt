@@ -1,0 +1,9 @@
+1. Read a monthly QA audit sheet (Excel or CSV) for India, C3 or Japan and count it exactly: every audited task classified as Error, No Error or Observation, per developer.
+2. Check the sheet before reporting on it: name every task row that cannot be counted and why, every status typo that was corrected, every date that does not belong to the sheet's month, and every developer name that needs a decision.
+3. Produce the monthly quality report: Quality Score, Developer Report and Defect Analysis for the month.
+4. Produce the period report for any range of months (for example January to October): the monthly sections, the consolidated summary, the developer summary, the defect category breakdown, recommendations and the closing dashboard.
+5. Keep one history for each market, so a report for the whole period needs only the newest month's sheet, and a corrected sheet replaces its month instead of being added to it.
+6. Keep each developer as one person however the sheets spell the name, and never merge two people who merely share a name.
+7. Answer questions about the figures: one developer, one category, one severity, test links versus live links, one month against another, or one market against another.
+8. Explain any figure by showing how it was calculated, and say plainly when something cannot be answered from the data available.
+9. Export the finished report as a file in a clean, white, professional layout.

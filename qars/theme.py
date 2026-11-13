@@ -1,11 +1,14 @@
 """
-Central design system for QA Report Studio.
+The design system of the app itself.
 
-One palette drives three surfaces — the Streamlit app, the generated PPTX and
-the generated PDF — so the product looks like one thing everywhere. The palette
-is brand-orange led: a warm vermilion for chrome and calls to action, a light
-warm-grey canvas, white cards, and a small set of data colours that stay
-distinct from the brand so a chart never reads as decoration.
+This palette styles the Streamlit app and the charts drawn on its pages. It is
+brand-orange led: a warm vermilion for chrome and calls to action, a light
+warm-grey canvas, white cards, and a small set of data colours.
+
+The generated report — the PPTX, the PDF and the charts inside them — has its
+own palette in report_theme.py: white pages and one navy accent, because a
+report is a document that gets forwarded and printed. The two expose the same
+names, so charts.py draws with either.
 
 Nothing in this module touches the network or the disk.
 """
@@ -24,10 +27,9 @@ BRAND_SOFT = "FFF1EA"   # peach wash behind hero banners and active nav
 # --------------------------------------------------------------------------
 # Core palette
 #
-# NAVY / NAVY_DK keep their names because the deck and PDF builders use them to
-# mean "the brand's chrome colour" — banners, title slides, section bars. In
-# this design that colour is the brand orange, deepened enough that white text
-# on top of it stays legible in print.
+# NAVY / NAVY_DK are the names charts.py and the app use for "the palette's
+# chrome colour". Here that is the brand orange, deepened enough that white
+# text on top of it stays legible; report_theme.py gives the same names a navy.
 # --------------------------------------------------------------------------
 NAVY = BRAND_DK    # header banners, section title bars
 NAVY_DK = BRAND_DP    # deeper stop for the title-slide gradient

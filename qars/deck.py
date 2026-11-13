@@ -1,10 +1,11 @@
 """
 PPTX generation.
 
-Layout language, taken from the reference dashboard so every slide reads as one
-document: light canvas, white cards with a hairline border, a navy section bar
-as each panel's heading, KPI tiles with a drawn icon and a big coloured number,
-and charts embedded as PNGs from charts.py.
+Layout language: a white page, panels drawn as hairline-bordered cards, each
+panel's heading on a quiet tinted strip, KPI tiles with a drawn icon and a big
+figure, and charts embedded as PNGs from charts.py. There is no banner and no
+block of brand colour anywhere — the palette is report_theme.py, and colour is
+kept for what it means (error free, defect, a score to watch).
 
 Everything is drawn with python-pptx shapes, so the client can open the deck and
 edit any number, title or colour by hand.
@@ -28,12 +29,16 @@ from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Emu, Inches, Pt
 
-from . import charts, metrics, theme as T
+from . import charts, metrics, report_theme as T
 
 SLIDE_W = 13.333
 SLIDE_H = 7.5
 MARGIN = 0.42
 FS = metrics.fmt_score
+
+
+def _is_total(row):
+    return bool(row) and str(row[0]).strip() in ("Total", "Grand Total")
 
 
 def _rgb(h):
@@ -101,10 +106,13 @@ class Kit:
                 fnt.color.rgb = _rgb(spec.get("c", T.TEXT))
         return box
 
-    def bar(self, s, x, y, w, label, h=0.36, fill=T.NAVY, size=12.5):
+    def bar(self, s, x, y, w, label, h=0.36, fill=T.ACCENT_SOFT, size=12.5):
+        # A panel's heading: the label in the accent on a quiet tinted strip,
+        # rather than white text on a block of colour.
         self.rect(s, x, y, w, h, fill=fill, line=None, radius=0.16)
         self.text(s, x + 0.16, y + 0.045, w - 0.32, h - 0.09,
-                  [[{"t": label.upper(), "sz": size, "b": True, "c": T.WHITE, "f": T.FONT_HEAD}]],
+                  [[{"t": label.upper(), "sz": size, "b": True, "c": T.ACCENT,
+                     "f": T.FONT_HEAD}]],
                   align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
 
     def image(self, s, png, x, y, w=None, h=None):
@@ -161,14 +169,18 @@ class Kit:
             tbl.rows[i].height = Inches(row_h)
 
         for j, htxt in enumerate(headers):
-            self._cell(tbl.cell(0, j), str(htxt), head_font, True, T.WHITE, T.NAVY,
+            self._cell(tbl.cell(0, j), str(htxt), head_font, True, T.INK, T.FILL,
                        PP_ALIGN.CENTER if j else PP_ALIGN.LEFT)
         for i, row in enumerate(rows, start=1):
-            bg = T.WHITE if i % 2 else T.ROW_ALT
+            # A totals row is the answer the table exists for: every figure in
+            # it is bold on the header's tint, so it reads as a total without
+            # needing a colour to say so.
+            total = _is_total(row)
+            bg = T.FILL if total else (T.WHITE if i % 2 else T.ROW_ALT)
             for j, val in enumerate(row):
                 col = (cell_colors or {}).get((i - 1, j), T.TEXT)
                 self._cell(tbl.cell(i, j), "" if val is None else str(val), font,
-                           j == 0 or col != T.TEXT, col, bg,
+                           total or j == 0 or col != T.TEXT, col, bg,
                            PP_ALIGN.CENTER if j else PP_ALIGN.LEFT)
         return gt, header_h + row_h * (nrows - 1)
 
@@ -191,11 +203,19 @@ class Kit:
         r.font.color.rgb = _rgb(color)
 
     def head(self, s, eyebrow, title):
-        self.rect(s, 0, 0, SLIDE_W, 0.90, fill=T.NAVY, line=None, radius=0)
-        self.text(s, MARGIN, 0.12, SLIDE_W - MARGIN * 2, 0.24,
-                  [[{"t": eyebrow.upper(), "sz": 8.4, "b": True, "c": "8FB3E8"}]])
+        # No banner: the title sits on the white page over a hairline, with a
+        # short accent rule to anchor it.
+        self.text(s, MARGIN, 0.14, SLIDE_W - MARGIN * 2, 0.24,
+                  [[{"t": eyebrow.upper(), "sz": 8.4, "b": True, "c": T.ACCENT}]])
         self.text(s, MARGIN, 0.36, SLIDE_W - MARGIN * 2, 0.42,
-                  [[{"t": title, "sz": 17.5, "b": True, "c": T.WHITE, "f": T.FONT_HEAD}]])
+                  [[{"t": title, "sz": 17.5, "b": True, "c": T.INK, "f": T.FONT_HEAD}]])
+        self.rule(s, MARGIN, 0.90, SLIDE_W - MARGIN * 2)
+
+    def rule(self, s, x, y, w, accent=1.1):
+        """A hairline across `w`, with a short accent segment at its start."""
+        self.rect(s, x, y, w, 0.012, fill=T.BORDER, line=None, radius=0)
+        if accent:
+            self.rect(s, x, y - 0.022, accent, 0.034, fill=T.ACCENT, line=None, radius=0)
 
     def footer(self, s, left, right=""):
         self.text(s, MARGIN, SLIDE_H - 0.34, SLIDE_W - MARGIN * 2, 0.24,
@@ -309,17 +329,22 @@ def build_deck(sel, options):
 # --------------------------------------------------------------------------
 # dividers
 # --------------------------------------------------------------------------
+def _spine(k, s):
+    """The one piece of colour on a cover or divider: a slim accent spine."""
+    k.rect(s, 0, 0, 0.22, SLIDE_H, fill=T.ACCENT, line=None, radius=0)
+
+
 def _title_slide(k, org, market, period, tot, o):
-    s = k.slide(bg=T.NAVY)
-    k.rect(s, 0, 4.15, SLIDE_W, SLIDE_H - 4.15, fill=T.NAVY_DK, line=None, radius=0)
-    k.text(s, 1.0, 1.65, 11.3, 0.5,
-           [[{"t": _brand(org, market).upper(), "sz": 15, "b": True, "c": "8FB3E8",
+    s = k.slide()
+    _spine(k, s)
+    k.text(s, 1.0, 1.55, 11.3, 0.5,
+           [[{"t": _brand(org, market).upper(), "sz": 15, "b": True, "c": T.ACCENT,
               "f": T.FONT_HEAD}]])
-    k.text(s, 1.0, 2.15, 11.3, 1.2,
-           [[{"t": "Quality Assurance Report", "sz": 42, "b": True, "c": T.WHITE,
+    k.text(s, 1.0, 2.05, 11.3, 1.2,
+           [[{"t": "Quality Assurance Report", "sz": 42, "b": True, "c": T.INK,
               "f": T.FONT_HEAD}]])
-    k.rect(s, 1.0, 3.55, 1.7, 0.055, fill=T.BLUE, line=None, radius=0)
-    k.text(s, 1.0, 3.80, 11.3, 0.4, [[{"t": period, "sz": 18, "c": "C6D4EC"}]])
+    k.rect(s, 1.0, 3.45, 1.7, 0.055, fill=T.ACCENT, line=None, radius=0)
+    k.text(s, 1.0, 3.70, 11.3, 0.4, [[{"t": period, "sz": 18, "c": T.TEXT_MUTED}]])
 
     tiles = [(f"{tot['total_tasks']:,}", "Tasks Audited"),
              (FS(tot["score"]), "Quality Score"),
@@ -328,52 +353,53 @@ def _title_slide(k, org, market, period, tot, o):
     tw, gap = 2.42, 0.28
     for i, (v, lbl) in enumerate(tiles):
         x = 1.0 + i * (tw + gap)
-        k.rect(s, x, 4.62, tw, 1.02, fill="0B265E", line="1E4488", radius=0.1)
+        k.rect(s, x, 4.62, tw, 1.02, fill=T.WHITE, line=T.BORDER, radius=0.1)
         k.text(s, x + 0.18, 4.74, tw - 0.36, 0.78,
-               [[{"t": v, "sz": 20, "b": True, "c": T.WHITE, "f": T.FONT_HEAD}],
-                [{"t": lbl.upper(), "sz": 7.8, "b": True, "c": "9FBAE4"}]],
+               [[{"t": v, "sz": 20, "b": True, "c": T.INK, "f": T.FONT_HEAD}],
+                [{"t": lbl.upper(), "sz": 7.8, "b": True, "c": T.TEXT_MUTED}]],
                anchor=MSO_ANCHOR.MIDDLE, spacing=1.0)
     by = o.get("prepared_by") or ""
     stamp = datetime.now().strftime("%d %b %Y")
     k.text(s, 1.0, 6.12, 11.3, 0.3,
            [[{"t": f"Prepared by {by}  \u2022  {stamp}" if by else f"Generated {stamp}",
-              "sz": 10, "c": "7E9AC8"}]])
+              "sz": 10, "c": T.TEXT_MUTED}]])
 
 
 def _month_divider(k, r, market, org, idx, total):
-    """A full-bleed marker so you always know which month you are looking at."""
-    s = k.slide(bg=T.NAVY)
-    k.rect(s, 0, 0, 0.22, SLIDE_H, fill=T.BLUE, line=None, radius=0)
+    """A page of its own, so you always know which month you are looking at."""
+    s = k.slide()
+    _spine(k, s)
     k.text(s, 1.2, 2.35, 11.0, 0.4,
-           [[{"t": f"{org.upper()} {market.upper()}  \u2022  MONTH {idx} OF {total}",
-              "sz": 13, "b": True, "c": "8FB3E8", "f": T.FONT_HEAD}]])
+           [[{"t": f"{_brand(org, market).upper()}  \u2022  MONTH {idx} OF {total}",
+              "sz": 13, "b": True, "c": T.ACCENT, "f": T.FONT_HEAD}]])
     k.text(s, 1.2, 2.85, 11.0, 1.1,
-           [[{"t": r["month_name"].upper(), "sz": 58, "b": True, "c": T.WHITE,
+           [[{"t": r["month_name"].upper(), "sz": 58, "b": True, "c": T.INK,
               "f": T.FONT_HEAD}]])
     k.text(s, 1.2, 4.00, 11.0, 0.7,
-           [[{"t": str(r["year"]), "sz": 34, "b": True, "c": T.BLUE, "f": T.FONT_HEAD}]])
-    k.rect(s, 1.2, 4.85, 1.7, 0.05, fill=T.BLUE, line=None, radius=0)
+           [[{"t": str(r["year"]), "sz": 34, "b": True, "c": T.ACCENT, "f": T.FONT_HEAD}]])
+    k.rect(s, 1.2, 4.85, 1.7, 0.05, fill=T.ACCENT, line=None, radius=0)
     k.text(s, 1.2, 5.10, 11.0, 0.4,
            [[{"t": f"{r['total']:,} tasks audited   \u2022   {r['error']} defect(s)   "
-                  f"\u2022   {FS(r['score'])} quality score", "sz": 14, "c": "C6D4EC"}]])
+                  f"\u2022   {FS(r['score'])} quality score", "sz": 14,
+              "c": T.TEXT_MUTED}]])
 
 
 def _period_divider(k, tot, market, org, period, n_months):
-    s = k.slide(bg=T.NAVY)
-    k.rect(s, 0, 0, 0.22, SLIDE_H, fill=T.GREEN, line=None, radius=0)
+    s = k.slide()
+    _spine(k, s)
     k.text(s, 1.2, 2.45, 11.0, 0.4,
-           [[{"t": f"{org.upper()} {market.upper()}", "sz": 13, "b": True, "c": "8FB3E8",
+           [[{"t": _brand(org, market).upper(), "sz": 13, "b": True, "c": T.ACCENT,
               "f": T.FONT_HEAD}]])
     k.text(s, 1.2, 2.95, 11.0, 1.0,
-           [[{"t": "CONSOLIDATED SUMMARY", "sz": 44, "b": True, "c": T.WHITE,
+           [[{"t": "CONSOLIDATED SUMMARY", "sz": 44, "b": True, "c": T.INK,
               "f": T.FONT_HEAD}]])
     k.text(s, 1.2, 4.05, 11.0, 0.6,
-           [[{"t": period, "sz": 26, "b": True, "c": T.BLUE, "f": T.FONT_HEAD}]])
-    k.rect(s, 1.2, 4.85, 1.7, 0.05, fill=T.GREEN, line=None, radius=0)
+           [[{"t": period, "sz": 26, "b": True, "c": T.ACCENT, "f": T.FONT_HEAD}]])
+    k.rect(s, 1.2, 4.85, 1.7, 0.05, fill=T.ACCENT, line=None, radius=0)
     k.text(s, 1.2, 5.10, 11.0, 0.4,
            [[{"t": f"All {n_months} month(s) combined   \u2022   {tot['total_tasks']:,} tasks   "
                   f"\u2022   {FS(tot['score'])} overall quality score",
-              "sz": 14, "c": "C6D4EC"}]])
+              "sz": 14, "c": T.TEXT_MUTED}]])
 
 
 # --------------------------------------------------------------------------
@@ -438,7 +464,7 @@ def _month_score(k, sel, r, market, foot):
     iy, ch = py + 0.58, cw * 0.92
     ty = iy + ch + 0.12
     k.image(s, charts.composition_pie(r["total"], r["error"], r["no_error"],
-                                      r["observation"], w=cw, h=ch),
+                                      r["observation"], w=cw, h=ch, pal=T),
             rx + (rw - cw) / 2, iy, cw)
     k.text(s, rx + 0.30, ty, rw - 0.60, max(0.6, ph - (ty - py) - 0.12),
            [[{"t": "Reading this chart", "sz": 12, "b": True, "c": T.NAVY}],
@@ -529,7 +555,8 @@ def _month_defects(k, sel, r, market, foot):
         dh = min(3.4, rw - 0.34)
         iy = py + 0.58
         ty = iy + dh + 0.12
-        k.image(s, charts.category_donut(cats[:6], w=dh, h=dh, centre_total=r["error"]),
+        k.image(s, charts.category_donut(cats[:6], w=dh, h=dh, centre_total=r["error"],
+                                         pal=T),
                 rx + (rw - dh) / 2, iy, dh)
         k.text(s, rx + 0.24, ty, rw - 0.48, max(0.7, ph - (ty - py) - 0.12),
                [[{"t": f"{ti} on test links", "sz": 12.5, "b": True, "c": T.BRAND}],
@@ -576,7 +603,7 @@ def _qa_summary(k, sel, tot, rows, market, org, period, foot):
     rw = SLIDE_W - MARGIN - rx
     k.rect(s, rx, py, rw, ph)
     k.bar(s, rx + 0.14, py + 0.14, rw - 0.28, "Quality Score by Month", h=0.32, size=10.5)
-    k.image(s, charts.quality_trend(rows, w=rw - 0.4, h=2.6),
+    k.image(s, charts.quality_trend(rows, w=rw - 0.4, h=2.6, pal=T),
             rx + 0.20, py + 0.66, rw - 0.4)
     mb = [(r["label"], r["total"], r["error"], r["error_free"], FS(r["score"]))
           for r in rows]
@@ -660,10 +687,10 @@ def _category_breakdown(k, sel, tot, market, org, period, foot):
         iy = py + 0.58
         by = iy + dh + 0.12
         k.image(s, charts.category_donut(cats[:7], w=dh, h=dh,
-                                         centre_total=tot["error_tasks"]),
+                                         centre_total=tot["error_tasks"], pal=T),
                 rx + (rw - dh) / 2, iy, dh)
         k.bar(s, rx + 0.14, by, rw - 0.28, "Test vs Live Links", h=bar_h, size=9.5)
-        k.image(s, charts.internal_external(ti, te, w=rw - 0.5, h=chart_h),
+        k.image(s, charts.internal_external(ti, te, w=rw - 0.5, h=chart_h, pal=T),
                 rx + 0.25, by + bar_h + 0.10, rw - 0.5)
     k.footer(s, foot, "Defect categories")
 
@@ -677,7 +704,8 @@ def _aging(k, sel, market, org, period, foot):
     k.rect(s, MARGIN, py, lw, ph)
     k.bar(s, MARGIN + 0.14, py + 0.14, lw - 0.28, "Defect age distribution", h=0.32, size=10.5)
     if rows and any(r["count"] for r in rows):
-        k.image(s, charts.aging_bar(rows, w=lw - 0.6, h=2.7), MARGIN + 0.30, py + 0.66, lw - 0.6)
+        k.image(s, charts.aging_bar(rows, w=lw - 0.6, h=2.7, pal=T),
+                MARGIN + 0.30, py + 0.66, lw - 0.6)
         body = [(r["bucket"], r["count"], f"{r['pct']:.2f}%") for r in rows]
         k.table(s, MARGIN + 0.20, py + 3.60, lw - 0.40,
                 ["Age Bucket", "Defects", "% of Defects"], body,
@@ -750,7 +778,7 @@ def _recommendations(k, sel, market, org, period, foot, note):
     for i, rec in enumerate(recs):
         cx = MARGIN + 0.20 + (i // per_col) * (cw + 0.24)
         cy = py + 0.66 + (i % per_col) * (rh + 0.08)
-        k.rect(s, cx, cy, cw, rh, fill=T.PAGE_BG, line=T.BORDER, radius=0.09)
+        k.rect(s, cx, cy, cw, rh, fill=T.ROW_ALT, line=T.BORDER, radius=0.09)
         col = [T.BLUE, T.ORANGE, T.RED, T.PURPLE, T.TEAL, T.GREEN][i % 6]
         k.icon(s, rec["icon"], col, cx + 0.16, cy + 0.18, 0.40)
         k.text(s, cx + 0.70, cy + 0.16, cw - 0.86, 0.30,
@@ -767,11 +795,12 @@ def _recommendations(k, sel, market, org, period, foot, note):
 def _dashboard(k, sel, tot, rows, market, period, foot):
     """The combined view. Placed last, immediately before Thank You."""
     s = k.slide()
-    k.rect(s, 0, 0, SLIDE_W, 0.82, fill=T.NAVY, line=None, radius=0)
-    k.text(s, MARGIN, 0.16, SLIDE_W - MARGIN * 2, 0.5,
+    k.text(s, MARGIN, 0.14, SLIDE_W - MARGIN * 2, 0.5,
            [[{"t": f"{market.upper()} QA SUMMARY REPORT  \u2022  {period.upper()}",
-              "sz": 21, "b": True, "c": T.WHITE, "f": T.FONT_HEAD}]],
+              "sz": 21, "b": True, "c": T.INK, "f": T.FONT_HEAD}]],
            align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+    k.rule(s, MARGIN, 0.80, SLIDE_W - MARGIN * 2, accent=0)
+    k.rect(s, (SLIDE_W - 1.7) / 2, 0.778, 1.7, 0.034, fill=T.ACCENT, line=None, radius=0)
 
     kpis = [(f"{tot['total_tasks']:,}", "Total Tasks Audited", T.BLUE, "clipboard", None),
             (f"{tot['error_free']:,}", "Error Free Tasks", T.GREEN, "check", None),
@@ -805,7 +834,7 @@ def _dashboard(k, sel, tot, rows, market, period, foot):
     k.rect(s, p1x, py, p1w, ph)
     k.bar(s, p1x + 0.10, py + 0.10, p1w - 0.20, "Quality Score Trend (Monthly)",
           h=0.30, size=10)
-    k.image(s, charts.quality_trend(rows, w=p1w - 0.32, h=2.08),
+    k.image(s, charts.quality_trend(rows, w=p1w - 0.32, h=2.08, pal=T),
             p1x + 0.16, py + 0.50, p1w - 0.32)
     scored = [r for r in rows if r["score"] is not None]
     if scored:
@@ -818,7 +847,7 @@ def _dashboard(k, sel, tot, rows, market, period, foot):
         bw = (p1w - 0.32 - 0.18) / 4
         for i, (ic, col, lbl, val) in enumerate(band):
             bx = p1x + 0.16 + i * (bw + 0.06)
-            k.rect(s, bx, py + ph - 0.62, bw, 0.50, fill=T.PAGE_BG, line=T.BORDER,
+            k.rect(s, bx, py + ph - 0.62, bw, 0.50, fill=T.ROW_ALT, line=T.BORDER,
                    radius=0.14)
             k.text(s, bx + 0.08, py + ph - 0.585, bw - 0.16, 0.44,
                    [[{"t": lbl, "sz": 5.8, "b": True, "c": col}],
@@ -830,7 +859,7 @@ def _dashboard(k, sel, tot, rows, market, period, foot):
     cats = metrics.category_table(sel)
     if cats:
         k.image(s, charts.category_donut(cats[:6], w=2.10, h=2.10,
-                                         centre_total=tot["error_tasks"]),
+                                         centre_total=tot["error_tasks"], pal=T),
                 p2x + 0.14, py + 0.46, 2.10)
         rowsc = [(c["category"], c["total"], f"{c['pct']:.2f}%") for c in cats[:7]]
         colors = {(i, 0): T.CATEGORY_COLORS.get(c["category"], T.TEXT)
@@ -850,7 +879,8 @@ def _dashboard(k, sel, tot, rows, market, period, foot):
         rh = (ph - 0.76) / 3
         for i, d in enumerate(top):
             yy = py + 0.52 + i * rh
-            k.image(s, charts.rank_badge(i + 1), p3x + 0.18, yy + (rh - 0.58) / 2, 0.50, 0.50)
+            k.image(s, charts.rank_badge(i + 1, pal=T), p3x + 0.18,
+                    yy + (rh - 0.58) / 2, 0.50, 0.50)
             k.text(s, p3x + 0.78, yy + 0.04, p3w - 0.98, 0.28,
                    [[{"t": d["name"], "sz": 10.5, "b": True, "c": T.BLUE, "f": T.FONT_HEAD}]])
             k.text(s, p3x + 0.78, yy + 0.32, p3w - 0.98, 0.5,
@@ -883,16 +913,17 @@ def _dashboard(k, sel, tot, rows, market, period, foot):
 
 
 def _closing(k, org, market, period, tot):
-    s = k.slide(bg=T.NAVY)
+    s = k.slide()
+    _spine(k, s)
     k.text(s, 1.0, 2.75, 11.3, 0.9,
-           [[{"t": "Thank You", "sz": 44, "b": True, "c": T.WHITE, "f": T.FONT_HEAD}]],
+           [[{"t": "Thank You", "sz": 44, "b": True, "c": T.INK, "f": T.FONT_HEAD}]],
            align=PP_ALIGN.CENTER)
-    k.rect(s, (SLIDE_W - 1.7) / 2, 3.78, 1.7, 0.055, fill=T.BLUE, line=None, radius=0)
+    k.rect(s, (SLIDE_W - 1.7) / 2, 3.78, 1.7, 0.055, fill=T.ACCENT, line=None, radius=0)
     k.text(s, 1.0, 4.08, 11.3, 0.4,
-           [[{"t": f"{org} {market} Quality Assurance  \u2022  {period}", "sz": 14,
-              "c": "C6D4EC"}]], align=PP_ALIGN.CENTER)
+           [[{"t": f"{_brand(org, market)} Quality Assurance  \u2022  {period}", "sz": 14,
+              "c": T.TEXT}]], align=PP_ALIGN.CENTER)
     if tot["score"] is not None:
         k.text(s, 1.0, 4.62, 11.3, 0.4,
                [[{"t": f"{tot['total_tasks']:,} tasks audited  \u2022  {FS(tot['score'])} "
-                      "overall quality score", "sz": 11, "c": "7E9AC8"}]],
+                      "overall quality score", "sz": 11, "c": T.TEXT_MUTED}]],
                align=PP_ALIGN.CENTER)
