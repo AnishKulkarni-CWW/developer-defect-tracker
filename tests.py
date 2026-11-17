@@ -61,16 +61,22 @@ def _db_with(market, tasks=(), blocks=()):
 
 
 SHIPPED_DIR = library.DIR
+# The baseline most library tests start from: two markets with a report, one
+# with nothing. India's own report shipped later and is tested on its own.
+BASELINE_DECKS = {"C3/C3_Quality_Defect_Report_2026.pptx",
+                  "Japan/Japan_Quality_Defect_Report_2026.pptx"}
 
 
 class TempLibrary:
     """
     Point the library at a throwaway folder for the duration of a block.
 
-      "decks"   — only the two issued decks: the history as it stood before any
-                  workbook was embedded, so a test's own uploads are the only
-                  workbooks in play (the default);
-      "shipped" — everything that ships: decks and embedded workbooks;
+      "decks"   — only the C3 and Japan issued decks: the history as it stood
+                  before any workbook was embedded, with India empty, so a
+                  test's own uploads are the only workbooks in play (the
+                  default);
+      "shipped" — everything that ships: the three decks and the embedded
+                  workbooks;
       "empty"   — nothing at all.
 
     Whatever the mode, nothing can be written into the repository.
@@ -92,7 +98,7 @@ class TempLibrary:
             # Only what shipped: months imported since (October onwards, on a
             # live app) must not change what these tests expect.
             keep = [e for e in shipped if e.get("shipped")
-                    and (self.mode == "shipped" or e["kind"] == "deck")]
+                    and (self.mode == "shipped" or e["file"] in BASELINE_DECKS)]
             for e in keep:
                 dest = os.path.join(self.tmp, e["file"])
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -548,7 +554,7 @@ section("REPORT LIBRARY — the real library")
 _REAL_SIG = library.signature()
 _real_shipped = [e for e in library.entries() if e.get("shipped")]
 check("Every file that ships is in the repository",
-      len(_real_shipped) == len(library.SHIPPED) == 11,
+      len(_real_shipped) == len(library.SHIPPED) == 10,
       f"{len(_real_shipped)} of {len(library.SHIPPED)}")
 _code = sorted((e["id"], e["file"], e["kind"], e["source_name"],
                 tuple(e.get("force_month") or ())) for e in library._default_index())
@@ -566,12 +572,17 @@ with TempLibrary("shipped") as _tlx:
     _decks = [e for e in _ship if e["kind"] == "deck"]
     _books = [e for e in _ship if e["kind"] == "workbook"]
     check("Everything in the library shipped with the app", all(e["shipped"] for e in _ship))
-    check("Two issued decks of six months each", sorted(e["months"] for e in _decks) == [6, 6],
-          str([e["months"] for e in _decks]))
-    check("Nine embedded workbooks of one month each",
-          len(_books) == 9 and all(e["months"] == 1 for e in _books),
+    check("Three issued decks: C3 and Japan to June, India to August",
+          {e["market"]: e["months"] for e in _decks} == {"C3": 6, "Japan": 6, "India": 8},
+          str({e["market"]: e["months"] for e in _decks}))
+    check("Seven embedded workbooks of one month each",
+          len(_books) == 7 and all(e["months"] == 1 for e in _books),
           str([(e["file"], e["months"]) for e in _books]))
-    for _m, _want in [("India", [(2026, m) for m in (7, 8, 9)]),
+    check("India's only sheet is September: its report covers January to August",
+          [e["file"] for e in _books if e["market"] == "India"]
+          == ["2026-09_September_2026_India.xlsx"],
+          str([e["file"] for e in _books if e["market"] == "India"]))
+    for _m, _want in [("India", [(2026, m) for m in range(1, 10)]),
                       ("C3", [(2026, m) for m in range(1, 10)]),
                       ("Japan", [(2026, m) for m in range(1, 10)])]:
         _got = sorted(library.periods_for(_m))
@@ -595,11 +606,11 @@ with TempLibrary("shipped") as _tlx:
         for p in e["used"]:
             _claims.setdefault((e["market"], p), []).append(e["file"])
     check("Every month of every market comes from exactly one file",
-          all(len(v) == 1 for v in _claims.values()) and len(_claims) == 3 + 9 + 9,
+          all(len(v) == 1 for v in _claims.values()) and len(_claims) == 9 + 9 + 9,
           str({k: v for k, v in _claims.items() if len(v) != 1}))
     _bdb = store._empty_db()
     _added = library.seed(_bdb)
-    check("Seeding adds every shipped month", _added == {"C3": 9, "Japan": 9, "India": 3},
+    check("Seeding adds every shipped month", _added == {"C3": 9, "Japan": 9, "India": 9},
           str(_added))
     check("Seeding twice adds nothing", library.seed(_bdb) == {})
     check("Library months are tagged",
@@ -644,7 +655,7 @@ with TempLibrary("shipped") as _tlx:
                _t["external"], _t["score"])
         check(f"{_m} {library.ingest.month_label((2026, _mo))}: {want[0]} tasks, "
               f"{want[1]} defects, {metrics.fmt_score(want[5])}", got == want, str(got))
-    for _m, want in [("India", (3, 423, 26, 93.85)), ("C3", (9, 980, 66, 93.27)),
+    for _m, want in [("India", (9, 1325, 87, 93.43)), ("C3", (9, 980, 66, 93.27)),
                      ("Japan", (9, 656, 25, 96.19))]:
         _t = _lib_totals(_bdb, _m)
         got = (_t["months"], _t["total_tasks"], _t["error_tasks"], _t["score"])
@@ -667,13 +678,63 @@ with TempLibrary("shipped") as _tlx:
               if e["kind"] == "workbook"
               and e["file"] != "Japan/2026-09_September_2026_Japan.xlsx"))
 
+    section("REPORT LIBRARY — India's issued report, January to August")
+    # month: tasks, defects, observations, score — as the report's own slides
+    # give the counts. Read from the slides by hand, independently of this app.
+    _INDIA_REPORT = {1: (100, 8, 2, 92.00), 2: (160, 10, 0, 93.75), 3: (152, 13, 0, 91.45),
+                     4: (115, 9, 1, 92.17), 5: (175, 12, 2, 93.14), 6: (200, 9, 0, 95.50),
+                     7: (176, 10, 1, 94.32), 8: (93, 9, 3, 90.32)}
+    for _mo, want in _INDIA_REPORT.items():
+        _t = metrics.totals(metrics.select(_bdb, "India", _bs, {"periods": [(2026, _mo)]}))
+        got = (_t["total_tasks"], _t["error_tasks"], _t["observations"], _t["score"])
+        check(f"India {library.ingest.month_label((2026, _mo))}: {want[0]} tasks, "
+              f"{want[1]} defects, {metrics.fmt_score(want[3])}", got == want, str(got))
+    check("March is scored from its own counts — the slide misprints it as 95.65%",
+          metrics.totals(metrics.select(_bdb, "India", _bs, {"periods": [(2026, 3)]}))
+          ["score"] == round(139 / 152 * 100, 2))
+    _ih = metrics.select(_bdb, "India", _bs, {"periods": [(2026, m) for m in range(1, 7)]})
+    _it = metrics.totals(_ih)
+    check("India January–June reproduces the report's own summary slide",
+          (_it["total_tasks"], _it["error_free"], _it["error_tasks"], _it["internal"],
+           _it["external"], _it["observations"], _it["developers"], _it["below_target"],
+           _it["score"]) == (902, 841, 61, 59, 2, 5, 10, 2, 93.24),
+          str((_it["total_tasks"], _it["error_free"], _it["error_tasks"], _it["internal"],
+               _it["external"], _it["observations"], _it["developers"],
+               _it["below_target"], _it["score"])))
+    _idev = {d["name"]: (d["total"], d["error"], d["score"])
+             for d in metrics.developer_table(_ih)}
+    for _name, want in [("Mayuresh Patil", (227, 14, 93.83)),
+                        ("Amol Laxman Dohale", (157, 9, 94.27)),
+                        ("Sandeep Jadhav", (158, 9, 94.30)),
+                        ("Prathmesh Prakash Tambe", (169, 12, 92.90)),
+                        ("Rohit Rajan", (6, 2, 66.67))]:
+        check(f"The report's developer summary is reproduced for {_name}",
+              _idev.get(_name) == want, str(_idev.get(_name)))
+    _icat = {c["category"]: (c["internal"], c["external"]) for c in metrics.category_table(_ih)}
+    check("And its defect category breakdown",
+          _icat == {"Content Related": (43, 1), "Design Related": (12, 0),
+                    "Image Related": (3, 0), "Video Related": (0, 1),
+                    "Redirect Links": (1, 0)}, str(_icat))
+    _isrc = {r["month"]: r["source"] for r in metrics.monthly_series(
+        metrics.select(_bdb, "India", _bs, {}))}
+    check("January to August come from the report, September from its sheet",
+          _isrc == {**{m: "summary" for m in range(1, 9)}, 9: "detail"}, str(_isrc))
+    check("No India sheet is held for July or August",
+          not any(r["month"] in (7, 8) for r in _bdb["tasks"]["India"])
+          and {r["month"] for r in _bdb["tasks"]["India"]} == {9})
+    _i8 = metrics.totals(metrics.select(_bdb, "India", _bs,
+                                        {"periods": [(2026, m) for m in range(1, 9)]}))
+    check("India January–August: 1,171 tasks, 80 defects, 93.17%",
+          (_i8["total_tasks"], _i8["error_tasks"], _i8["score"]) == (1171, 80, 93.17),
+          str((_i8["total_tasks"], _i8["error_tasks"], _i8["score"])))
+
 section("REPORT LIBRARY — a damaged index costs nothing")
 with TempLibrary("shipped") as _tl0:
     with open(library.INDEX, "w", encoding="utf-8") as _fh:
         _fh.write("<<<<<<< HEAD\n{ not json")
     _ddb = store._empty_db()
     library.resync(_ddb)
-    for _m, want in [("India", (3, 423)), ("C3", (9, 980)), ("Japan", (9, 656))]:
+    for _m, want in [("India", (9, 1325)), ("C3", (9, 980)), ("Japan", (9, 656))]:
         _t = _lib_totals(_ddb, _m)
         check(f"With index.json unreadable, {_m} still has every month and task",
               (_t["months"], _t["total_tasks"]) == want,
@@ -682,7 +743,7 @@ with TempLibrary("shipped") as _tl0:
           all(r["year"] == 2026 for m in store.MARKETS for r in _ddb["tasks"][m]))
     os.remove(library.INDEX)
     check("With no index.json at all, every shipped file is still listed",
-          len(library.entries()) == 11, str(len(library.entries())))
+          len(library.entries()) == 10, str(len(library.entries())))
 
 section("REPORT LIBRARY — a month imported once is kept for good")
 with TempLibrary() as _tl:
@@ -877,31 +938,68 @@ with TempLibrary() as _tlo:
     check("Every import gets a later stamp than the one before",
           _stamps == sorted(_stamps) and len(set(_all)) == len(_all), str(_stamps))
 
-section("OWNERSHIP — a corrected upload over a shipped month")
+def _month_total(db, market, period):
+    """Tasks the reports would show for one month, whichever kind of file supplies it."""
+    return metrics.totals(metrics.select(db, market, _lib_settings(db),
+                                         {"periods": [period]}))["total_tasks"]
+
+
+section("OWNERSHIP — a corrected upload over a shipped sheet")
 with TempLibrary("shipped") as _tls:
-    _jul, _gone = library.add("India", "July 2026 India corrected.csv",
-                              _workbook(2026, 7, 180, dev="Dev Fix"))
-    check("The shipped July file is never deleted", _gone == [] and os.path.exists(
-        os.path.join(library.DIR, "India/2026-07_July_2026_India.xlsx")))
+    _sep, _gone = library.add("India", "September 2026 India corrected.csv",
+                              _workbook(2026, 9, 180, dev="Dev Fix"))
+    check("The shipped September sheet is never deleted", _gone == [] and os.path.exists(
+        os.path.join(library.DIR, "India/2026-09_September_2026_India.xlsx")))
     _sdb = store._empty_db()
     library.resync(_sdb)
-    check("July counts the correction only — not both files",
-          _month_tasks(_sdb, "India", (2026, 7)) == 180,
-          str(_month_tasks(_sdb, "India", (2026, 7))))
-    check("August and September are untouched",
-          (_month_tasks(_sdb, "India", (2026, 8)), _month_tasks(_sdb, "India", (2026, 9)))
-          == (93, 154))
+    check("September counts the correction only — not both files",
+          _month_tasks(_sdb, "India", (2026, 9)) == 180,
+          str(_month_tasks(_sdb, "India", (2026, 9))))
+    check("July and August, from the report, are untouched",
+          (_month_total(_sdb, "India", (2026, 7)), _month_total(_sdb, "India", (2026, 8)))
+          == (176, 93))
     _orig = next(e for e in library.summary()
-                 if e["file"] == "2026-07_July_2026_India.xlsx")
-    check("The shipped file is shown as replaced, by the correction",
-          _orig["used"] == [] and _orig["superseded"] == {(2026, 7): _jul["id"]},
+                 if e["file"] == "2026-09_September_2026_India.xlsx")
+    check("The shipped sheet is shown as replaced, by the correction",
+          _orig["used"] == [] and _orig["superseded"] == {(2026, 9): _sep["id"]},
           f"{_orig['used']} / {_orig['superseded']}")
-    _lost, _back = library.removal_effect(_jul["id"])
-    check("Undoing the correction is seen to bring the shipped July back",
-          _lost == [] and _back == {(2026, 7): "July 2026 India.xlsx"}, f"{_back}")
-    library.remove(_jul["id"])
+    _lost, _back = library.removal_effect(_sep["id"])
+    check("Undoing the correction is seen to bring the shipped September back",
+          _lost == [] and _back == {(2026, 9): "September 2026 India.xlsx"}, f"{_back}")
+    library.remove(_sep["id"])
     library.resync(_sdb)
-    check("And removing it does", _month_tasks(_sdb, "India", (2026, 7)) == 176)
+    check("And removing it does", _month_tasks(_sdb, "India", (2026, 9)) == 154)
+
+    section("OWNERSHIP — a sheet for a month the issued report covers")
+    # India's report holds January to August. A sheet for August is richer than
+    # the report's summary of it, so it takes August over — August only.
+    _aug, _gone = library.add("India", "August 2026 India.csv",
+                              _workbook(2026, 8, 120, dev="Dev Aug"))
+    library.resync(_sdb)
+    check("The sheet takes the month over from the report",
+          _month_total(_sdb, "India", (2026, 8)) == 120,
+          str(_month_total(_sdb, "India", (2026, 8))))
+    check("The report's other months are untouched",
+          [_month_total(_sdb, "India", (2026, m)) for m in (1, 2, 3, 4, 5, 6, 7)]
+          == [100, 160, 152, 115, 175, 200, 176])
+    check("The month is counted once: India still has nine months",
+          _lib_totals(_sdb, "India")["months"] == 9
+          and _lib_totals(_sdb, "India")["total_tasks"] == 1325 - 93 + 120,
+          str(_lib_totals(_sdb, "India")["total_tasks"]))
+    _rep_row = next(e for e in library.summary()
+                    if e["file"] == "India_Quality_Defect_Report_2026.pptx")
+    check("The library says which of the report's months a sheet now supplies",
+          _rep_row["superseded"] == {(2026, 8): _aug["id"]}
+          and _rep_row["used"] == [(2026, m) for m in range(1, 8)],
+          f"{_rep_row['used']} / {_rep_row['superseded']}")
+    check("The report itself is never deleted", _gone == [] and os.path.exists(
+        os.path.join(library.DIR, "India/India_Quality_Defect_Report_2026.pptx")))
+    _lost, _back = library.removal_effect(_aug["id"])
+    check("Removing the sheet is seen to bring the report's August back",
+          _lost == [] and _back == {(2026, 8): "the issued report"}, f"{_lost} / {_back}")
+    library.remove(_aug["id"])
+    library.resync(_sdb)
+    check("And it does", _month_total(_sdb, "India", (2026, 8)) == 93)
 
     section("OWNERSHIP — this session's own rows win for this session")
     _own_rows, _ = ingest.read_excel(_workbook(2026, 10, 30, dev="Dev Session"), "Japan",
@@ -1328,8 +1426,9 @@ for label, _sel, _extra in _cases:
     check(f"No shape runs off the slide with {label}", not _bad,
           "; ".join(_bad[:2]) if _bad else "")
 
-section("REPORT THEME — white pages, no orange, and the app left alone")
+section("THEME — white and navy, no orange in the report or in the app")
 import colorsys                                                # noqa: E402
+import re                                                      # noqa: E402
 from qars import report_theme, theme as app_theme              # noqa: E402
 from PIL import Image as _Image                                # noqa: E402
 
@@ -1355,8 +1454,37 @@ check("No colour in the report palette is an orange",
 check("The report page is white", report_theme.PAGE_BG == "FFFFFF")
 check("The deck and the PDF both draw from the report palette",
       deck.T is report_theme and pdf.T is report_theme)
-check("The app keeps its own palette", app_theme.BRAND == "F4511E"
-      and charts.T is app_theme)
+_app_tokens = {k: v for k, v in vars(app_theme).items()
+               if k.isupper() and isinstance(v, str) and len(v) == 6}
+_app_tokens.update({f"category {k}": v for k, v in app_theme.CATEGORY_COLORS.items()})
+_app_tokens.update({f"severity {k}": v for k, v in app_theme.SEVERITY_COLORS.items()})
+check("No colour in the app palette is an orange either",
+      not [k for k, v in _app_tokens.items() if _is_orange(v)],
+      str([k for k, v in _app_tokens.items() if _is_orange(v)]))
+check("The app and the report share the navy", app_theme.BRAND == report_theme.ACCENT)
+check("Screen charts still draw from the app's own palette", charts.T is app_theme)
+
+
+def _css_colours(css):
+    """Every literal colour in a stylesheet, as bare hex."""
+    out = set(c.upper() for c in re.findall(r"#([0-9A-Fa-f]{6})\b", css))
+    for r, g, b in re.findall(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)", css):
+        out.add(f"{int(r):02X}{int(g):02X}{int(b):02X}")
+    return out
+
+
+for _mode, _css in (("light", app_theme.app_css()), ("dark", app_theme.app_css(dark=True))):
+    _bad = sorted(c for c in _css_colours(_css) if _is_orange(c))
+    check(f"The app's {_mode} stylesheet has no orange in it", not _bad, str(_bad))
+check("Both stylesheets still carry the brand: navy on light, a readable blue on dark",
+      "#1F3A5F" in app_theme.app_css() and "#4F7AB8" in app_theme.app_css(dark=True))
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".streamlit",
+                       "config.toml"), encoding="utf-8") as _fh:
+    _primary = re.search(r'^primaryColor\s*=\s*"#([0-9A-Fa-f]{6})"', _fh.read(), re.M)
+check("Streamlit's own widgets are navy too, not orange",
+      bool(_primary) and not _is_orange(_primary.group(1))
+      and _primary.group(1).upper() == app_theme.BRAND,
+      _primary.group(1) if _primary else "no primaryColor")
 
 _tsel = metrics.select(_db_with("India", tasks=tasks), "India", _settings(), {})
 _tprs = Presentation(io.BytesIO(deck.build_deck(_tsel, {"market_label": "India"})))
@@ -1393,9 +1521,9 @@ check("A report chart of the monthly trend has no orange in it",
       _orange_pixels(charts.quality_trend(_trend_rows, pal=report_theme)) == 0)
 check("A report chart of the categories has no orange in it",
       _orange_pixels(charts.category_donut(_cat_rows, pal=report_theme)) == 0)
-check("The same charts on screen still use the app's own colours",
-      _orange_pixels(charts.quality_trend(_trend_rows)) > 0
-      and _orange_pixels(charts.category_donut(_cat_rows)) > 0)
+check("The same charts on screen have no orange in them either",
+      _orange_pixels(charts.quality_trend(_trend_rows)) == 0
+      and _orange_pixels(charts.category_donut(_cat_rows)) == 0)
 check("A small donut and a large one are both drawn",
       len(charts.category_donut(_cat_rows, w=1.7, h=1.7, pal=report_theme)) > 3_000
       and len(charts.category_donut(_cat_rows, w=3.4, h=3.4, pal=report_theme)) > 5_000)
@@ -1405,7 +1533,6 @@ check("A totals row is recognised whatever it is called",
 
 section("AGENT PACK — what the Omni agent is given matches the tool")
 import importlib.util                                          # noqa: E402
-import re                                                      # noqa: E402
 import zipfile                                                 # noqa: E402
 
 _AGENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent")
@@ -1456,9 +1583,9 @@ with TempLibrary("shipped") as _tla:
     _months = re.findall(r"^MONTH \| (\w+) \| (\d{4}-\d{2}) \| total=(\d+) \| error=(\d+) "
                          r"\| no_error=(\d+) \| observation=(\d+) \| error_free=(\d+)",
                          _hist, re.M)
-    check("The history has a line for all 21 shipped months", len(_months) == 21,
+    check("The history has a line for all 27 shipped months", len(_months) == 27,
           str(len(_months)))
-    for _m, _want in [("India", (423, 26)), ("C3", (980, 66)), ("Japan", (656, 25))]:
+    for _m, _want in [("India", (1325, 87)), ("C3", (980, 66)), ("Japan", (656, 25))]:
         _got = (sum(int(x[2]) for x in _months if x[0] == _m),
                 sum(int(x[3]) for x in _months if x[0] == _m))
         check(f"The history's {_m} months add up to the tool's own totals",
@@ -1473,7 +1600,7 @@ with TempLibrary("shipped") as _tla:
 
     _names, _asks = bp.names_text(_adb, _as, _araw, _aamb)
     check("Settled names are listed with their spellings",
-          "NAME | Amol Laxman Dohale | India |" in _names and "Amol Dohale" in _names)
+          "NAME | Amol Laxman Dohale | India |" in _names and "Amol dohale" in _names)
     check("Open name questions are asked, not decided",
           any("Neha" in a for a in _asks) and any("Mitesh" in a for a in _asks)
           and any("Sarika" in a for a in _asks), str(len(_asks)))
@@ -1481,7 +1608,8 @@ with TempLibrary("shipped") as _tla:
           any("All Dev in Jp Market" in a for a in _asks))
 
     _rep = bp.report_text(_adb, _as, "India", [(2026, 7), (2026, 8), (2026, 9)])
-    _sel3 = metrics.select(_adb, "India", _as, {})
+    _sel3 = metrics.select(_adb, "India", _as,
+                           {"periods": [(2026, 7), (2026, 8), (2026, 9)]})
     _tot3 = metrics.totals(_sel3)
     check("The worked example carries the tool's own figures",
           f"| {_tot3['total_tasks']:,} | {metrics.fmt_score(_tot3['score'])} (Watch) | "
@@ -1507,7 +1635,7 @@ with TempLibrary("shipped") as _tla:
           "MONTH | India | 2026-09 | total=154" in _chk)
     _ans = bp.answers_text(_adb, _as)
     check("The test answers cover every shipped sheet and every market",
-          _ans.count("attach: ") == 9 and _ans.count('type: "Give me the') == 3,
+          _ans.count("attach: ") == 7 and _ans.count('type: "Give me the') == 3,
           f"{_ans.count('attach: ')} sheets")
     check("They flag the four sheets with something to catch",
           "dated September 1975" in _ans and "dated August 2026" in _ans

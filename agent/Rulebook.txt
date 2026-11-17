@@ -231,8 +231,8 @@ developer, and one line per defect category split by link type.
   any category, test link versus live link   the list of individual defective tasks
   comparing months or markets
 
-January to June 2026 for C3 and Japan were taken from reports issued before this tool
-existed. Their totals, developers and categories are in the history. No sheet exists for
+Months marked source=issued-report were taken from reports issued before this tool
+existed. Their totals, developers and categories are in the history. No sheet is held for
 them, so the right-hand column cannot be answered for those months.
 
 ======================================================================

@@ -271,6 +271,25 @@ def page_header(title, sub=None, crumb=None):
         md(f'<div class="qrs-page-sub">{esc(sub)}</div>')
 
 
+def on_page(color):
+    """
+    A colour for a figure written straight on the page.
+
+    In the dark theme the deep accents — the navy, the gold — would sit on a
+    near-black card almost unseen, so they are lifted towards white until they
+    read. Bright colours, and everything in the light theme, pass unchanged.
+    """
+    if not st.session_state.get("dark"):
+        return color
+    c = color.lstrip("#")
+    lin = [(v / 255) / 12.92 if v / 255 <= 0.03928 else (((v / 255) + 0.055) / 1.055) ** 2.4
+           for v in (int(c[i:i + 2], 16) for i in (0, 2, 4))]
+    lum = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+    if lum >= 0.2:
+        return color
+    return T.mix(color, "FFFFFF", 0.5 if lum < 0.1 else 0.3)
+
+
 def pill(text, color):
     return (f'<span class="qrs-pill" style="background:{T.hx(T.soft(color))};'
             f'color:{T.hx(color)}">{esc(text)}</span>')
@@ -301,7 +320,7 @@ def kpi_row(items, compact=False, cols=None):
         if icon and not compact:
             out.append(f'<div class="ico" style="background:{T.hx(T.soft(color))};'
                        f'color:{T.hx(color)}">{icon}</div>')
-        out.append(f'<div class="v" style="color:{T.hx(color)}">{value}</div>'
+        out.append(f'<div class="v" style="color:{T.hx(on_page(color))}">{value}</div>'
                    f'<div class="l">{esc(label)}</div>')
         if sub:
             out.append(f'<div class="s">{sub}</div>')
@@ -354,7 +373,7 @@ def rank_rows(top):
             f'<div class="body"><div class="nm">{esc(d["name"])}</div>'
             f'<div class="mt">{d["total"]} tasks &bull; {d["error_free"]} error free</div>'
             f'<div class="meter"><i style="width:{max(2, min(100, sc)):.0f}%"></i></div></div>'
-            f'<div class="sc" style="color:{T.hx(T.score_color(d["score"]))}">'
+            f'<div class="sc" style="color:{T.hx(on_page(T.score_color(d["score"])))}">'
             f'{FS(d["score"])}</div></div>')
     md("".join(out))
 
@@ -983,9 +1002,54 @@ def build_selection(market):
         "severities": cfg["severities"], "environments": cfg["environments"],
         "weeks": cfg["weeks"], "days": cfg["days"], "qa_people": cfg["qa_people"]})
     tot = metrics.totals(sel)
+
+    # A filter on developer, category, severity, link type, QA analyst, week or
+    # day works on task rows. A month taken from an issued report has none, so
+    # it drops out of the selection — and that has to be said, or most of a
+    # market's history can vanish from a report without a word.
+    narrowing = any(cfg[k] for k in ("developers", "categories", "severities",
+                                     "environments", "weeks", "days", "qa_people"))
+    with_rows = set(fac["task_months"])
+    left_out = [p for p in periods if p not in with_rows] if narrowing else []
     if tot["total_tasks"] == 0:
+        if left_out:
+            return None, None, (
+                f"These filters match no tasks. {month_span(left_out)} "
+                f"{'comes' if len(left_out) == 1 else 'come'} from an issued report, which "
+                "has no task rows to filter. Clear every filter except year and month to "
+                "report on "
+                + ("that month." if len(left_out) == 1 else "those months."))
         return None, None, "These filters match no tasks. Widen the selection and try again."
+    if left_out:
+        extra = (f"{month_span(left_out)} {'is' if len(left_out) == 1 else 'are'} left out: "
+                 f"{'it comes' if len(left_out) == 1 else 'they come'} from an issued "
+                 "report, which has no task rows to filter. Clear every filter except year "
+                 "and month to include "
+                 + ("it." if len(left_out) == 1 else "them."))
+        note = f"{note} {extra}" if note else extra
     return sel, tot, note
+
+
+def month_span(periods):
+    """
+    'January – August 2026' for a run of months, a list for anything else.
+
+    Used where the app has to name the months something applies to; a run is
+    the usual case, and eight month names in a row is not a sentence.
+    """
+    periods = sorted(periods)
+    if not periods:
+        return ""
+    run = all((b[0] * 12 + b[1]) - (a[0] * 12 + a[1]) == 1
+              for a, b in zip(periods, periods[1:]))
+    first, last = periods[0], periods[-1]
+    if len(periods) == 1:
+        return f"{MONTHS[first[1] - 1]} {first[0]}"
+    if run and first[0] == last[0]:
+        return f"{MONTHS[first[1] - 1]} \u2013 {MONTHS[last[1] - 1]} {last[0]}"
+    if run:
+        return f"{MONTHS[first[1] - 1]} {first[0]} \u2013 {MONTHS[last[1] - 1]} {last[0]}"
+    return ", ".join(f"{MONTHS[m - 1]} {y}" for y, m in periods)
 
 
 def data_warning_panel(market):
@@ -1293,7 +1357,7 @@ def render_dashboard(sel, tot=None):
         cells = []
         for i, item in enumerate(ins):
             col = T.ACCENTS[i % len(T.ACCENTS)]
-            cells.append(f'<div class="it"><div class="v" style="color:{T.hx(col)}">'
+            cells.append(f'<div class="it"><div class="v" style="color:{T.hx(on_page(col))}">'
                          f'{esc(item["value"])}</div>'
                          f'<div class="t">{esc(item["text"])}</div></div>')
         md('<div class="qrs-ins">' + "".join(cells) + "</div>")
@@ -1460,7 +1524,7 @@ def page_home():
             cells = []
             for i, item in enumerate(ins):
                 col = T.ACCENTS[i % len(T.ACCENTS)]
-                cells.append(f'<div class="it"><div class="v" style="color:{T.hx(col)}">'
+                cells.append(f'<div class="it"><div class="v" style="color:{T.hx(on_page(col))}">'
                              f'{esc(item["value"])}</div>'
                              f'<div class="t">{esc(item["text"])}</div></div>')
             md('<div class="qrs-ins">' + "".join(cells) + "</div>")
@@ -1693,7 +1757,7 @@ def page_compare():
         for m, sc, n in scored[1:]:
             gap = best[1] - sc
             cells.append(f'<div class="it"><div class="v" '
-                         f'style="color:{T.hx(T.score_color(sc))}">{gap:.2f} pts</div>'
+                         f'style="color:{T.hx(on_page(T.score_color(sc)))}">{gap:.2f} pts</div>'
                          f'<div class="t">{esc(m)} sits {gap:.2f} points below '
                          f'{esc(best[0])} ({FS(sc)} over {n:,} tasks).</div></div>')
         md('<div class="qrs-ins">' + "".join(cells) + "</div>")
@@ -2374,10 +2438,10 @@ A year-to-date report is built from every month so far, and nobody wants to
 upload all of them again each month. So the app keeps them.
 
 Every sheet you import is written into the **report library** as the file it
-came from. The app ships with the history to date already in it: the two
-PowerPoint reports issued for C3 and Japan (January to June 2026) and the audit
-sheets for July, August and September 2026 for all three markets. Everything
-in that folder is loaded at start-up, so:
+came from. The app ships with the history to date already in it: the issued
+PowerPoint reports (C3 and Japan to June 2026, India to August 2026) and the
+audit sheets for the months after them, up to September 2026. Everything in
+that folder is loaded at start-up, so:
 
 - each month you import **only the new month** — one sheet per market;
 - a month already held is **replaced** by a re-import, so a corrected sheet

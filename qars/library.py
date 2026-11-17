@@ -68,8 +68,11 @@ SHIPPED = (
      None),
     ("Japan", "Japan_Quality_Defect_Report_2026.pptx",
      "Japan_Quality_Defect_Report_2026.pptx", None),
-    ("India", "2026-07_July_2026_India.xlsx", "July 2026 India.xlsx", None),
-    ("India", "2026-08_August_2026_India.xlsx", "August 2026 India.xlsx", None),
+    # India's issued report runs January to August, so its sheets start in
+    # September: a sheet for a month replaces the report's figures for it, and
+    # July and August are to be read from the report.
+    ("India", "India_Quality_Defect_Report_2026.pptx",
+     "India_Quality_Defect_Report_2026.pptx", None),
     ("India", "2026-09_September_2026_India.xlsx", "September 2026 India.xlsx", None),
     ("C3", "2026-07_July_2026_C3.xlsx", "July 2026 C3.xlsx", None),
     ("C3", "2026-08_August_2026_C3.xlsx", "August 2026 C3.xlsx", None),
@@ -169,8 +172,11 @@ def entries():
         r.setdefault("added", "")
         r.setdefault("source_name", os.path.basename(r["file"]))
         alive.append(r)
-    alive.sort(key=lambda r: (not r.get("shipped"), r.get("added") or "",
-                              r.get("periods") or [], r["file"]))
+    # Shipped first, and the issued reports first among those, so the library
+    # page reads as the history it is: the reports, then the sheets after them.
+    # Ownership never depends on this order (see _chronological).
+    alive.sort(key=lambda r: (not r.get("shipped"), r.get("kind") != "deck",
+                              r.get("added") or "", r.get("periods") or [], r["file"]))
     return alive
 
 
@@ -553,9 +559,13 @@ def superseded_by(entry_id, owner=None):
     Returns {(year, month): taking_over_entry_id} for the months it has but
     does not supply, so the library page can say "replaced by …" rather than
     leave someone wondering why a file is listed but not counted.
+
+    An issued report is covered too. It holds month summaries, and a sheet for
+    one of its months takes that month over, because task rows are the richer
+    record — so the report keeps every month except the ones a sheet now owns.
     """
     e = next((x for x in entries() if x["id"] == entry_id), None)
-    if not e or e["kind"] != "workbook":
+    if not e:
         return {}
     owner = ownership() if owner is None else owner
     out = {}
@@ -743,11 +753,14 @@ def summary():
     owner = ownership()
     for e in entries():
         per = periods_of(e)
-        used = per if e["kind"] == "deck" else months_supplied(e["id"], owner)
+        taken = superseded_by(e["id"], owner)
+        # A report supplies every month it holds except those a sheet took over.
+        used = ([p for p in per if p not in taken] if e["kind"] == "deck"
+                else months_supplied(e["id"], owner))
         main = primary_period(e)
         out.append({"id": e["id"], "market": e["market"], "kind": e["kind"],
                     "used": used, "primary": main,
-                    "superseded": superseded_by(e["id"], owner),
+                    "superseded": taken,
                     "notes": reading_notes(e),
                     "shipped": bool(e.get("shipped")),
                     "file": os.path.basename(e["file"]),

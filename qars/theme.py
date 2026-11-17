@@ -2,12 +2,13 @@
 The design system of the app itself.
 
 This palette styles the Streamlit app and the charts drawn on its pages. It is
-brand-orange led: a warm vermilion for chrome and calls to action, a light
-warm-grey canvas, white cards, and a small set of data colours.
+white and navy: a deep navy for chrome and calls to action, a cool light-grey
+canvas, white cards, and a small set of data colours. There is no orange in
+it — the brand moved off orange, and the screens follow the report.
 
 The generated report — the PPTX, the PDF and the charts inside them — has its
-own palette in report_theme.py: white pages and one navy accent, because a
-report is a document that gets forwarded and printed. The two expose the same
+own palette in report_theme.py, with the same navy and slightly deeper data
+colours that survive a projector and a printer. The two expose the same
 names, so charts.py draws with either.
 
 Nothing in this module touches the network or the disk.
@@ -18,18 +19,17 @@ from string import Template
 # --------------------------------------------------------------------------
 # Brand
 # --------------------------------------------------------------------------
-BRAND = "F4511E"   # primary action / active nav / brand marks
-BRAND_DK = "D8441C"   # chrome on print surfaces, where white text must pass contrast
-BRAND_DP = "A83411"   # deepest stop of the brand gradient
-BRAND_LT = "FF8A5B"   # hover / secondary brand fill
-BRAND_SOFT = "FFF1EA"   # peach wash behind hero banners and active nav
+BRAND = "1F3A5F"   # primary action / active nav / brand marks — a deep navy
+BRAND_DK = "16293F"   # pressed state and deeper chrome
+BRAND_DP = "0F1D2E"   # deepest stop of the brand gradient
+BRAND_LT = "3D5F8C"   # lighter stop for gradients and hover
+BRAND_SOFT = "E8EDF4"   # pale wash behind hero banners and the active nav item
 
 # --------------------------------------------------------------------------
 # Core palette
 #
 # NAVY / NAVY_DK are the names charts.py and the app use for "the palette's
-# chrome colour". Here that is the brand orange, deepened enough that white
-# text on top of it stays legible; report_theme.py gives the same names a navy.
+# chrome colour". Here, as in report_theme.py, that is the navy itself.
 # --------------------------------------------------------------------------
 NAVY = BRAND_DK    # header banners, section title bars
 NAVY_DK = BRAND_DP    # deeper stop for the title-slide gradient
@@ -38,12 +38,12 @@ BLUE = "2563EB"   # data colour: audited volume
 BLUE_LT = "60A5FA"   # lighter blue for secondary series
 GREEN = "16A34A"   # success / error-free
 RED = "E11D2E"   # defects
-ORANGE = "F59E0B"   # amber — internal defects (kept distinct from the brand)
+ORANGE = "8F6B00"   # gold: scores to watch, test-link defects — a gold, never an orange
 PURPLE = "7C3AED"   # developer counts
 TEAL = "0D9488"   # observations / average score
 GOLD = "F0B429"   # rank 1
 SILVER = "9AA3B2"   # rank 2
-BRONZE = "C0764A"   # rank 3
+BRONZE = "8C6239"   # rank 3
 
 WHITE = "FFFFFF"
 PAGE_BG = "F7F8FC"   # app / slide canvas
@@ -122,7 +122,7 @@ def score_band(score):
 
 
 def hx(color):
-    """`F4511E` -> `#F4511E` for CSS / matplotlib."""
+    """`1F3A5F` -> `#1F3A5F` for CSS / matplotlib."""
     return "#" + color.lstrip("#")
 
 
@@ -781,25 +781,30 @@ def app_css(dark=False):
     if dark:
         page, card, card2 = "12141B", "1A1D26", "232733"
         ink, muted, border, grid = "F2F4F8", "9AA3B4", "2C313D", "262B36"
-        brand_soft = "2A1C16"
-        hero_a, hero_b, hero_c = "231A16", "1E1B20", "1A1D26"
-        hero_bd, hero_text = "33261F", "C4CBD8"
+        # Navy text on a near-black page cannot be read, so the dark theme
+        # lifts the brand to a mid blue that holds contrast both ways: as text
+        # on the page and under white text on a button.
+        brand, brand_lt, brand_dk = "4F7AB8", "6A92C9", "3D6399"
+        brand_soft = "1B2534"
+        hero_a, hero_b, hero_c = "182130", "1A1F29", "1A1D26"
+        hero_bd, hero_text = "263245", "C4CBD8"
         chip_bg, chip_bd = "rgba(255,255,255,.06)", "rgba(255,255,255,.10)"
-        blob1, blob2 = rgba(BRAND, .16), rgba(BRAND_LT, .10)
+        blob1, blob2 = rgba(brand, .16), rgba(brand_lt, .10)
         sh1, sh2 = "rgba(0,0,0,.40)", "rgba(0,0,0,.55)"
-        help_to, help_bd = "1E1B20", "33261F"
+        help_to, help_bd = "1A1F29", "263245"
         tint = 0.78            # accents on a dark surface need a deeper tint
         ink_shift = 0.30       # message text is lightened instead of darkened
     else:
         page, card, card2 = PAGE_BG, CARD_BG, "F7F8FB"
         ink, muted, border, grid = TEXT, TEXT_MUTED, BORDER, GRID
+        brand, brand_lt, brand_dk = BRAND, BRAND_LT, BRAND_DK
         brand_soft = BRAND_SOFT
-        hero_a, hero_b, hero_c = "FFF4EE", "FFF7F2", "FDF6F1"
-        hero_bd, hero_text = "FAE3D7", "5C6373"
-        chip_bg, chip_bd = "rgba(255,255,255,.72)", "rgba(244,81,30,.16)"
-        blob1, blob2 = rgba(BRAND, .13), rgba(BRAND_LT, .10)
+        hero_a, hero_b, hero_c = "F3F6FA", "F6F8FB", "F9FAFC"
+        hero_bd, hero_text = "E1E7EF", "5C6373"
+        chip_bg, chip_bd = "rgba(255,255,255,.72)", rgba(BRAND, .16)
+        blob1, blob2 = rgba(BRAND, .07), rgba(BRAND_LT, .06)
         sh1, sh2 = "rgba(16,24,40,.05)", "rgba(16,24,40,.18)"
-        help_to, help_bd = "FFFBF8", "FAE3D7"
+        help_to, help_bd = "F8FAFC", "E1E7EF"
         tint = 0.90
         ink_shift = 0.0
 
@@ -814,8 +819,8 @@ def app_css(dark=False):
             if ink_shift else hx(mix(c, "0B0D12", 0.45))
 
     return _CSS.substitute(
-        brand=hx(BRAND), brand_dk=hx(BRAND_DK), brand_lt=hx(BRAND_LT),
-        brand_soft=hx(brand_soft), brand_glow=rgba(BRAND, .55), brand_ring=rgba(BRAND, .18),
+        brand=hx(brand), brand_dk=hx(brand_dk), brand_lt=hx(brand_lt),
+        brand_soft=hx(brand_soft), brand_glow=rgba(brand, .55), brand_ring=rgba(brand, .18),
         green=hx(GREEN), red=hx(RED), amber=hx(ORANGE), blue=hx(BLUE),
         teal=hx(TEAL), purple=hx(PURPLE),
         ok_soft=_soft(GREEN), bad_soft=_soft(RED), warn_soft=_soft(ORANGE),
@@ -823,7 +828,7 @@ def app_css(dark=False):
         ok_bd=_bd(GREEN), warn_bd=_bd(ORANGE), info_bd=_bd(BLUE),
         ok_ink=_ink(GREEN), warn_ink=_ink(ORANGE), info_ink=_ink(BLUE),
         ok_lt=hx(mix(GREEN, WHITE, .28)),
-        drop_bd=hx(mix(BRAND, page if dark else WHITE, .55)),
+        drop_bd=hx(mix(brand, page if dark else WHITE, .55)),
         page=hx(page), card=hx(card), card2=hx(card2),
         ink=hx(ink), muted=hx(muted), border=hx(border), grid=hx(grid),
         sh1=sh1, sh2=sh2,

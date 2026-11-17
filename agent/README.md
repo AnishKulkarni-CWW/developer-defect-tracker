@@ -136,7 +136,7 @@ Then check the developer table against the one in `Test_Answers.txt`, row by row
 
 Type `Give me the C3 report for January to September 2026.` It should give
 980 tasks, 66 defects and an overall score of 93.27%, with the month table and
-developer summary in `Test_Answers.txt`. Repeat for India (423 tasks, 93.85%)
+developer summary in `Test_Answers.txt`. Repeat for India (1,325 tasks, 93.43%)
 and Japan (656 tasks, 96.19%).
 
 **Part 3 — does it keep the rules?** Three one-line questions, at the end of
