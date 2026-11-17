@@ -15,7 +15,7 @@ the history to date already in it:
 |---|---|---|
 | C3 | January – September 2026 | the issued Jan–Jun report, then the Jul, Aug and Sep audit sheets |
 | Japan | January – September 2026 | the issued Jan–Jun report, then the Jul, Aug and Sep audit sheets |
-| India | July – September 2026 | the Jul, Aug and Sep audit sheets |
+| India | January – September 2026 | the issued Jan–Aug report, then the Sep audit sheet |
 
 Everything in that folder is loaded at start-up. Import October's three sheets
 and October joins that history; next month you import only November. Everyone
@@ -23,6 +23,13 @@ using the same server sees the same history.
 
 On a hosted server there is one more step to make a month outlive a restart —
 see [The report library](#the-report-library).
+
+---
+
+**Moving to an Omni agent?** The [`agent/`](agent/README.md) folder holds the
+text for every Agent Builder section, the files the agent needs, a test with
+known answers, and the procedure. `python agent/build_pack.py` builds the pack
+from the report library.
 
 ---
 
@@ -229,11 +236,13 @@ filter and every chart works. Several months at once is fine.
 
 Press **Read file(s)**. Nothing is saved yet.
 
-There is no separate deck upload. The months that only ever existed as a
-PowerPoint report — January to June 2026 for C3 and Japan — are in the report
-library and are already there before you upload anything. A workbook for one of
-those months *replaces* the deck figures for it, because task-level detail is
-richer than a recovered summary.
+There is no separate deck upload. The months taken from an issued PowerPoint
+report — January to June 2026 for C3 and Japan, January to August 2026 for
+India — are in the report library and are already there before you upload
+anything. A workbook for one of those months *replaces* the report's figures
+for it, because task-level detail is richer than a recovered summary; the
+Report library tab then says which of the report's months a sheet now supplies,
+and removing the sheet puts the report's month back.
 
 **All three markets from one page.** Select the three sheets together. A file
 whose name says its market — `October 2026 C3.xlsx`, `JP October.xlsx` — is
@@ -348,10 +357,10 @@ Manager page that two spellings are one person — or two different people — t
 decision is written to `qars/library/aliases.json`, next to the months. It is
 made once and holds for everyone, and it is published with the library.
 
-#### What the shipped sheets needed
+#### What the shipped files needed
 
-The July–September workbooks are kept byte for byte as they were delivered;
-these corrections are applied when they are read, and recorded in
+The reports and workbooks are kept byte for byte as they were delivered; these
+corrections are applied when they are read, and recorded in
 `qars/library/index.json`:
 
 | Sheet | What it has | What the app does |
@@ -360,6 +369,13 @@ these corrections are applied when they are read, and recorded in
 | Japan July 2026 | three re-test rows dated August | files the whole sheet under July 2026 |
 | Japan September 2026 | one Status typed `Psas` | counts it as Pass (72 tasks, as the sheet has) |
 | India September 2026 | row 140 *iX1 LWB Brochure update* has no Developer Name; row 111 has no Status | not counted (154 of 155 audited rows) — fill them in and re-upload the sheet to count them |
+| India issued report, March 2026 | the slide prints the month's score as 95.65% — one developer's score copied into the total row | shows 91.45%, which is what the slide's own counts give (139 error free of 152) |
+
+India's report covers January to August, so India's sheets start in September.
+The July and August sheets that shipped earlier were removed: a sheet always
+takes its month over from a report, and those two months are to be read from
+the report. Their totals are the same either way (176 tasks at 94.32% and 93
+at 90.32%).
 
 #### Making months permanent on a hosted server
 
@@ -603,7 +619,9 @@ once take another's, status typos, file-name routing, and that a damaged
 a stand-in for GitHub's API on 127.0.0.1: a wrong token, repository or branch,
 a read-only token, one commit per import, no empty commits, someone else
 committing first, and a server rebuilt from the repository alone still having
-the month.
+the month. It also holds the report to its look — white pages, no orange in the
+deck or its charts, the app's own colours untouched — and checks that the
+history built for the Omni agent adds up to the tool's own figures.
 
 **`tests_ui.py`** boots the real `app.py` through Streamlit's own AppTest
 harness and clicks the real widgets: every page renders, every nav item
@@ -622,8 +640,8 @@ one commit that a restarted server still has.
 Both end with their own count:
 
 ```
-  324 passed, 0 failed
-  295 passed, 0 failed
+  410 passed, 0 failed
+  314 passed, 0 failed
 ```
 
 ---
@@ -836,6 +854,11 @@ QA_Report_Studio/
 ├── tests.py                Engine checks      (python tests.py)
 ├── tests_ui.py             Interface checks   (python tests_ui.py)
 ├── fake_github.py          Stand-in for GitHub's API, used by both test suites
+├── agent/                  Everything needed to rebuild this tool as an Omni agent
+│   ├── README.md           The step-by-step procedure
+│   ├── 1_…5_*.txt          The text for each Agent Builder section
+│   ├── Rulebook.txt        The rules in full, as an attachment for the agent
+│   └── build_pack.py       Builds the agent's history and test answers from the library
 ├── requirements.txt
 ├── .gitignore              keeps client data out of version control
 ├── run_windows.bat         Windows launcher
@@ -847,10 +870,11 @@ QA_Report_Studio/
     ├── library/            Those files, plus index.json (and aliases.json once
     │   │                   a name decision has been made)
     │   ├── C3/             Jan-Jun 2026 as issued, Jul-Sep 2026 sheets, then imports
-    │   ├── India/          Jul-Sep 2026 sheets, then imports
+    │   ├── India/          Jan-Aug 2026 as issued, Sep 2026 sheet, then imports
     │   └── Japan/          Jan-Jun 2026 as issued, Jul-Sep 2026 sheets, then imports
     ├── publish.py          Optional: commits the library back to GitHub
-    ├── theme.py            Design system — palette, tokens and the app stylesheet
+    ├── theme.py            The app's design system — palette, tokens and stylesheet
+    ├── report_theme.py     The report's palette — white pages, one navy accent
     ├── store.py            Atomic JSON persistence
     ├── normalize.py        Name, status, category and severity cleaning
     ├── ingest.py           Excel / CSV / PPTX readers, month detection
@@ -867,3 +891,12 @@ identical rather than merely similar.
 The PPTX and the PDF are drawn independently from the same palette, the same
 chart images and the same metrics, at the same 13.333 × 7.5in page — so they
 look the same, and the PDF does not need PowerPoint or LibreOffice installed.
+
+**White and navy throughout.** `report_theme.py` gives the report white pages,
+near-black type, hairline rules and a single navy accent; colour is kept for
+what it means (green for error free, red for defects, gold for a score to
+watch). `theme.py` gives the app's own screens the same navy on a white and
+light-grey canvas, and `.streamlit/config.toml` sets Streamlit's own widgets
+to it. There is no orange anywhere — the test suite checks every palette, both
+stylesheets and the charts for it. The two palettes are kept apart so the
+screen and the page can be tuned independently.

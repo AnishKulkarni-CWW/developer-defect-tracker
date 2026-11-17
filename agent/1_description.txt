@@ -1,0 +1,5 @@
+NAME
+Developer Defect Tracker
+
+DESCRIPTION
+Turns the monthly QA audit sheets for India, C3 and Japan into the developer quality report. Upload the month's audit sheets and it reads them, checks them, and reports the quality score per month and per developer, the defect categories, test-link versus live-link defects, the top performers, insights and recommendations - for one month or for the whole period to date. It keeps every month already reported, so you only ever give it the newest month. Use it for the monthly QA report, for a developer's or a market's figures, and to compare markets.

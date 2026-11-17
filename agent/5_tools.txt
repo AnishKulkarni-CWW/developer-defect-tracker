@@ -1,0 +1,20 @@
+TOOLS TO TICK IN AGENT BUILDER > TOOLS
+
+Tick:
+  [x] File Export          - lets the agent hand the finished report back as a file.
+
+Leave unticked:
+  [ ] Web Browsing         - nothing in this work comes from the internet, and the audit data should not go there.
+  [ ] Generate Image       - an image generator cannot draw a chart from numbers; it would invent them.
+  [ ] Generate Video
+  [ ] YouGov Analysis, Google Trends Historical Metrics, YouTube Audience Insights, GWI Spark,
+      Audiense Insights, Pulsar Social Trends, Truth Central Studies, Recent News, DASH Shifts,
+      Pinterest Trends, TikTok Trends, Consumer Trends, Q Cultural Intelligence, Conversations,
+      Magnific, Lions (Direct)
+                           - audience, trend and creative tools. None of them is used for a QA report,
+                             and every tool left on is one more thing the agent might reach for.
+
+Scroll to the end of the list. If it offers a tool for running code or analysing data
+(names such as "Code Interpreter", "Data Analysis", "Python" or "Spreadsheet Analysis"),
+tick that one too: it lets the agent count the rows of a sheet with a program instead of
+by reading, which makes the counts exact.

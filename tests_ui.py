@@ -53,12 +53,16 @@ import tempfile                                              # noqa: E402
 
 SHIPPED_DIR = library.DIR
 SCRATCH_DIR = tempfile.mkdtemp(prefix="qars_ui_lib_")
+# "decks" is two markets with an issued report and one with nothing. India's
+# own report shipped later and is exercised in the "shipped" sections.
+BASELINE_DECKS = {"C3/C3_Quality_Defect_Report_2026.pptx",
+                  "Japan/Japan_Quality_Defect_Report_2026.pptx"}
 
 
 def _fill_library(dest, mode):
     with open(os.path.join(SHIPPED_DIR, "index.json"), encoding="utf-8") as fh:
         shipped = [e for e in json.load(fh)["entries"] if e.get("shipped")]
-    keep = [e for e in shipped if mode == "shipped" or e["kind"] == "deck"]
+    keep = [e for e in shipped if mode == "shipped" or e["file"] in BASELINE_DECKS]
     for e in keep:
         target = os.path.join(dest, e["file"])
         os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -69,8 +73,9 @@ def _fill_library(dest, mode):
 
 def reset_library(mode="decks"):
     """
-    Put the scratch library back to a known start: "decks" (the two issued
-    reports) or "shipped" (those plus the embedded July–September workbooks).
+    Put the scratch library back to a known start: "decks" (the C3 and Japan
+    issued reports, India empty) or "shipped" (everything that ships: the three
+    reports and the embedded workbooks).
 
     The library is permanent by design, so an import in one section is still
     there in the next — correct behaviour, and exactly what makes these tests
@@ -569,7 +574,15 @@ check("Streamlit's icon face is protected from the UI font stack",
       "Material Symbols" in light_css)
 check("The app reads its theme from Streamlit rather than owning a switch",
       hasattr(__import__("app"), "dark_theme"))
+_NAVY_FIGURE = f'class="v" style="color:{_T.hx(_T.BRAND)}"'
+at = fresh()
+check("In the light theme a figure can be navy", _NAVY_FIGURE in body(at))
 at = fresh(dark=True)
+check("In the dark theme a navy figure is lifted so it can be read on the dark card",
+      _NAVY_FIGURE not in body(at))
+check("Nothing in either stylesheet is orange",
+      "#F4511E" not in light_css and "#F4511E" not in dark_css
+      and "244,81,30" not in light_css.replace(" ", ""))
 ran_clean(at, "Every page renders under the dark palette")
 for key in PAGES:
     at.session_state["nav"] = key
@@ -907,19 +920,26 @@ def repo_snapshot(folder):
 
 
 reset_library("shipped")
-section("EMBEDDED HISTORY — July to September ship with the app")
+section("EMBEDDED HISTORY — every market ships with January to September")
 at = fresh(seed=False)
 ran_clean(at, "The app boots on the embedded history alone")
-check("India arrives with July to September",
-      periods(at, "India") == [(2026, m) for m in (7, 8, 9)], str(periods(at, "India")))
-for _m in ("C3", "Japan"):
+for _m in ("India", "C3", "Japan"):
     check(f"{_m} arrives with January to September",
           periods(at, _m) == [(2026, k) for k in range(1, 10)], str(periods(at, _m)))
 check("No month outside 2026 appears anywhere",
       all(y == 2026 for m in store.MARKETS for y, _ in periods(at, m)))
 widget(at, "selectbox", "topbar_market").select("India").run()
 page = body(at)
-check("India's dashboard shows the embedded figures", "423" in page and "93.85%" in page)
+check("India's dashboard shows the embedded figures",
+      "1,325" in page and "93.43%" in page)
+_idb, _is = at.session_state["db"], at.session_state["settings"]
+_isrc = {r["month"]: r["source"] for r in metrics.monthly_series(
+    metrics.select(_idb, "India", _is, {}))}
+check("India's January to August come from its report, September from the sheet",
+      _isrc == {**{m: "summary" for m in range(1, 9)}, 9: "detail"}, str(_isrc))
+check("India's March shows the score its counts give, 91.45%",
+      metrics.totals(metrics.select(_idb, "India", _is, {"periods": [(2026, 3)]}))["score"]
+      == 91.45)
 widget(at, "selectbox", "topbar_market").select("Japan").run()
 check("Japan's dashboard counts all 656 tasks", "656" in body(at) and "96.19%" in body(at))
 check("Japan's period picker offers all nine months",
@@ -944,7 +964,9 @@ check("The deck counts every C3 task", "980" in _blob)
 at.session_state["nav"] = "data"
 at.run()
 page = body(at)
-check("The library lists all eleven shipped files", "11 file(s)" in page)
+check("The library lists all ten shipped files", "10 file(s)" in page)
+check("India's report is one of them", "India_Quality_Defect_Report_2026.pptx" in page
+      and "January 2026 – August 2026" in page)
 check("It says which India task could not be counted, and why",
       "iX1 LWB Brochure update" in page and "no Developer Name" in page)
 check("It says the Japan 'Psas' typo was read as a pass", "Psas" in page)
@@ -965,9 +987,7 @@ check("The status typo is called out before anything is imported",
       "“Psas”" in body(at) and "looks like a typo" in body(at))
 widget(at, "button", "conf_India").click().run()
 ran_clean(at, "Confirming three markets at once runs clean")
-check("India now runs July to October",
-      periods(at, "India") == [(2026, m) for m in (7, 8, 9, 10)], str(periods(at, "India")))
-for _m in ("C3", "Japan"):
+for _m in ("India", "C3", "Japan"):
     check(f"{_m} now runs January to October",
           periods(at, _m) == [(2026, k) for k in range(1, 11)], str(periods(at, _m)))
 check("October is kept in the library for every market",
@@ -1016,29 +1036,90 @@ check("The replaced file is gone from the library",
       not any(e["source_name"] == "October 2026 C3.csv" for e in library.summary()))
 
 reset_library("shipped")
-section("CORRECTIONS — a shipped month can be corrected, and the correction undone")
+section("CORRECTIONS — a shipped sheet can be corrected, and the correction undone")
+
+
+def _india_month(at_, month):
+    return metrics.totals(metrics.select(
+        at_.session_state["db"], "India", at_.session_state["settings"],
+        {"periods": [(2026, month)]}))["total_tasks"]
+
+
 at = fresh(seed=False, nav="upload")
-upload(at, "India", [("July 2026 India corrected.csv", sheet(180, month=7, errors=4,
-                                                               dev="Asha Rao"))])
+upload(at, "India", [("September 2026 India corrected.csv",
+                      sheet(180, month=9, errors=4, dev="Asha Rao"))])
 widget(at, "button", "conf_India").click().run()
-_db, _s = at.session_state["db"], at.session_state["settings"]
-check("July counts the corrected sheet only",
-      metrics.totals(metrics.select(_db, "India", _s, {"periods": [(2026, 7)]}))
-      ["total_tasks"] == 180)
+check("September counts the corrected sheet only", _india_month(at, 9) == 180,
+      str(_india_month(at, 9)))
 at.session_state["nav"] = "data"
 at.run()
-check("The library says the shipped July no longer counts, and why",
-      "now comes from <b>July 2026 India corrected.csv</b>" in body(at))
+check("The library says the shipped September no longer counts, and why",
+      "now comes from <b>September 2026 India corrected.csv</b>" in body(at))
 _opts = widget(at, "selectbox", "lib_rm_pick").options
 widget(at, "selectbox", "lib_rm_pick").select(
     next(o for o in _opts if "corrected" in o)).run()
-check("Removing the correction is seen to put the shipped July back",
-      "puts July 2026 back from July 2026 India.xlsx" in body(at))
+check("Removing the correction is seen to put the shipped September back",
+      "puts September 2026 back from September 2026 India.xlsx" in body(at))
 widget(at, "button", "lib_rm_go").click().run()
-check("And it does",
-      metrics.totals(metrics.select(at.session_state["db"], "India",
-                                    at.session_state["settings"], {"periods": [(2026, 7)]}))
-      ["total_tasks"] == 176)
+check("And it does", _india_month(at, 9) == 154, str(_india_month(at, 9)))
+
+section("CORRECTIONS — a sheet for a month the issued report covers")
+at = fresh(seed=False, nav="upload")
+upload(at, "India", [("August 2026 India.csv", sheet(120, month=8, errors=5, dev="Asha Rao"))])
+widget(at, "button", "conf_India").click().run()
+check("The sheet takes August over from the report", _india_month(at, 8) == 120,
+      str(_india_month(at, 8)))
+check("The report's other months are untouched",
+      [_india_month(at, m) for m in (1, 2, 3, 4, 5, 6, 7)]
+      == [100, 160, 152, 115, 175, 200, 176])
+check("India still has nine months, with August counted once",
+      periods(at, "India") == [(2026, m) for m in range(1, 10)])
+at.session_state["nav"] = "data"
+at.run()
+check("The library says which of the report's months now comes from a sheet",
+      "August 2026 now comes from <b>August 2026 India.csv</b>" in body(at))
+_opts = widget(at, "selectbox", "lib_rm_pick").options
+widget(at, "selectbox", "lib_rm_pick").select(
+    next(o for o in _opts if "August 2026 India.csv" in o)).run()
+check("Removing the sheet is seen to put the report's August back",
+      "puts August 2026 back from the issued report" in body(at))
+widget(at, "button", "lib_rm_go").click().run()
+check("And it does", _india_month(at, 8) == 93, str(_india_month(at, 8)))
+
+reset_library("shipped")
+section("FILTERS — the app says when a filter leaves out a report's months")
+# India's January to August come from its issued report, which has totals per
+# developer and category but no task rows. A task-level filter cannot reach
+# them, and saying nothing would make eight months vanish from a report.
+at = fresh(seed=False, nav="upload")
+ep = at.session_state["cfg_epoch"]
+_NOTE = "which has no task rows to filter"
+check("With no filter the whole history is in scope",
+      "1,325" in body(at) and _NOTE not in body(at))
+submit_form(at, [(widget(at, "multiselect", f"d_India_{ep}"), ["Neha Lal"])], "Apply filters")
+page = body(at)
+check("A developer filter names the months it cannot reach",
+      "January – August 2026 are left out" in page and "issued report" in page)
+check("And still reports the month it can",
+      "100.00%" in page and "match no tasks" not in page)
+at.session_state["nav"] = "results"
+at.run()
+check("The same explanation is on the results page",
+      "January – August 2026 are left out" in body(at))
+at.session_state["nav"] = "upload"
+at.run()
+submit_form(at, [(widget(at, "multiselect", f"d_India_{ep}"), ["Prevan Punjabi"])],
+            "Apply filters")
+page = body(at)
+check("A developer who is only in the report's months is explained, not just 'no tasks'",
+      "match no tasks" in page and "come from an issued report" in page)
+submit_form(at, [(widget(at, "multiselect", f"d_India_{ep}"), [])], "Apply filters")
+check("Clearing the filter brings every month back",
+      "1,325" in body(at) and _NOTE not in body(at))
+submit_form(at, [(widget(at, "multiselect", f"m_India_{ep}"), [9]),
+                 (widget(at, "multiselect", f"d_India_{ep}"), ["Neha Lal"])], "Apply filters")
+check("A filter over months that all have task rows says nothing of the sort",
+      _NOTE not in body(at) and "match no tasks" not in body(at))
 
 reset_library("shipped")
 section("NAMES — a decision made once holds for everyone")
@@ -1128,7 +1209,7 @@ try:
     _idx = json.loads(_files["qars/library/index.json"])["entries"]
     check("And an index listing them",
           sum(1 for e in _idx if e.get("primary") == "2026-10") == 3)
-    check("Alongside everything that shipped", sum(1 for e in _idx if e.get("shipped")) == 11)
+    check("Alongside everything that shipped", sum(1 for e in _idx if e.get("shipped")) == 10)
     check("The app says they are part of the app now",
           "committed to the repository" in body(at))
 
@@ -1139,7 +1220,7 @@ try:
           all((2026, 10) in periods(_after, m) for m in store.MARKETS))
     check("And all of its history before that",
           periods(_after, "C3") == [(2026, k) for k in range(1, 11)]
-          and periods(_after, "India") == [(2026, m) for m in (7, 8, 9, 10)])
+          and periods(_after, "India") == [(2026, k) for k in range(1, 11)])
 
     at = hosted("data")
     widget(at, "button", "lib_check").click().run()
