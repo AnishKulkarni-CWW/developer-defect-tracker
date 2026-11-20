@@ -20,7 +20,10 @@ from datetime import datetime
 MARKETS = ["India", "C3", "Japan"]
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(APP_DIR, "data")
+# The desktop build keeps its working copy in a per-user folder outside the
+# program folder (QARS_DATA_DIR, set by qars/desktop.py), so an update never
+# takes it away. Everywhere else it is ./data beside the app.
+DATA_DIR = os.environ.get("QARS_DATA_DIR", "").strip() or os.path.join(APP_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "database.json")
 SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")

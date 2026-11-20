@@ -336,6 +336,21 @@ section[data-testid="stSidebar"] .st-key-nav_help_cta button p {
 section[data-testid="stSidebar"] .st-key-nav_help_cta button:hover {
   background:var(--brand-soft) !important;
 }
+/* Desktop app only: the one control that ends the program. Quiet until
+   pointed at, and red, because it is the only thing in the rail that cannot
+   be taken back. Streamlit stamps `st-key-<key>` on a keyed widget's
+   container, which is what restyles this one button and no other. */
+section[data-testid="stSidebar"] .st-key-quit_app_btn button {
+  background:transparent !important; border:1px solid var(--border) !important;
+  justify-content:center !important; text-align:center !important; margin-top:12px;
+}
+section[data-testid="stSidebar"] .st-key-quit_app_btn button p {
+  color:var(--bad) !important; font-weight:700 !important;
+}
+section[data-testid="stSidebar"] .st-key-quit_app_btn button:hover {
+  background:var(--bad) !important; border-color:var(--bad) !important;
+}
+section[data-testid="stSidebar"] .st-key-quit_app_btn button:hover p { color:#fff !important; }
 .qrs-foot {
   display:flex; align-items:center; gap:10px; margin-top:16px; padding:11px 10px;
   border-top:1px solid var(--border);

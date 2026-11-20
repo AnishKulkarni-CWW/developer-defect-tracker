@@ -51,7 +51,7 @@ import json                                                  # noqa: E402
 import shutil                                                # noqa: E402
 import tempfile                                              # noqa: E402
 
-SHIPPED_DIR = library.DIR
+SHIPPED_DIR = library.PACKAGED_DIR
 SCRATCH_DIR = tempfile.mkdtemp(prefix="qars_ui_lib_")
 # "decks" is two markets with an issued report and one with nothing. India's
 # own report shipped later and is exercised in the "shipped" sections.
@@ -1273,6 +1273,66 @@ finally:
     publish.API = _saved_api
     publish.configure(token="", repo="")
     _gh.stop()
+
+# ==========================================================================
+section("DESKTOP APP — one computer, nothing to publish, a way to quit")
+# ==========================================================================
+import time as _time                                         # noqa: E402
+from qars import desktop as _desk                            # noqa: E402
+
+reset_library("shipped")
+os.environ["QARS_DESKTOP"] = "1"
+try:
+    at = fresh(seed=False)
+    ran_clean(at, "The desktop app boots")
+    check("No Shut down button until the launcher says how to quit",
+          not has(at, "button", "quit_app_btn"))
+    _quit = []
+    _desk.on_shutdown(lambda: _quit.append(1))
+    at.run()
+    check("The menu offers Shut down app", has(at, "button", "quit_app_btn"))
+    widget(at, "button", "quit_app_btn").click().run()
+    _time.sleep(0.3)
+    check("Pressing it asks the launcher to end the program", _quit == [1])
+    check("The page says the app is closing and that everything is saved",
+          "is closing" in body(at) and "Everything is saved" in body(at))
+    _desk._SHUTDOWN.clear()
+
+    at_ = AppTest.from_file(APP, default_timeout=300)
+    at_.secrets["github"] = {"token": "good-token", "repo": "owner/repo", "branch": "main"}
+    at_.session_state["db"] = store._empty_db()
+    at_.session_state["settings"] = store._default_settings()
+    at_.session_state["nav"] = "data"
+    at_.run()
+    ran_clean(at_, "Data Manager runs in the desktop app")
+    check("A token in the secrets does not switch publishing on (it works offline)",
+          not publish.enabled())
+    check("The report library says it is kept on this computer",
+          "Kept on this computer." in body(at_))
+    check("…and offers no GitHub set-up", "github_pat_" not in body(at_)
+          and "Make it permanent" not in body(at_))
+
+    at = fresh(seed=False)
+    upload(at, "India", [OCTOBER[0]])
+    check("The upload page does not talk about servers forgetting things",
+          "server forgets" not in body(at))
+    widget(at, "button", "conf_India").click().run()
+    ran_clean(at, "An import runs clean in the desktop app")
+    check("An import says it is saved on this computer",
+          "saved to the report library on this computer" in body(at))
+    at.session_state["nav"] = "help"
+    at.run()
+    check("Help explains where the desktop app keeps months",
+          "Where the desktop app keeps your months" in body(at)
+          and "Making months permanent on a hosted server" not in body(at))
+finally:
+    os.environ.pop("QARS_DESKTOP", None)
+    _desk._SHUTDOWN.clear()
+    publish.configure(token="", repo="")
+
+at = fresh(seed=False)
+check("Outside the desktop app there is no Shut down button",
+      not has(at, "button", "quit_app_btn"))
 
 section("THE REAL LIBRARY — untouched by every test above")
 library.DIR, library.INDEX = SHIPPED_DIR, os.path.join(SHIPPED_DIR, "index.json")

@@ -16,6 +16,11 @@ agent/pack/
 .streamlit/secrets.toml
 *.secrets.toml
 
+# The Windows build's intermediate and finished files (build_exe.bat). The
+# build environment itself lives in %LOCALAPPDATA%\QARS-build, outside here.
+desktop/build/
+desktop/dist/
+
 # Local environments and caches
 .venv/
 venv/

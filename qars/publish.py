@@ -64,6 +64,17 @@ def configure(token=None, repo=None, branch=None):
     return status()
 
 
+def disable():
+    """
+    Switch publishing off for this process, whatever the environment says.
+
+    The desktop app is for working offline: its library lives on the computer
+    it runs on, so there is nothing to publish and no network call to make.
+    """
+    _CONFIG.update(token="", repo="")
+    return status()
+
+
 def enabled():
     return bool(_CONFIG["token"] and _CONFIG["repo"])
 

@@ -1,0 +1,3 @@
+# Windows batch files must reach Windows with CRLF line endings, however the
+# repository is checked out or downloaded.
+*.bat text eol=crlf

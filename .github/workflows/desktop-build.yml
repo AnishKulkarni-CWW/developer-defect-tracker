@@ -1,0 +1,106 @@
+# Builds the Windows setup file on a real Windows machine, exactly as
+# build_exe.bat does on a person's PC, then installs it and drives the app.
+# The finished "QA Report Studio Setup.exe" is attached to the run (Actions tab
+# -> this workflow -> the run -> Artifacts), so it can be downloaded from here
+# instead of being built by hand.
+name: Windows desktop build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "desktop/**"
+      - "build_exe.bat"
+      - "app.py"
+      - "qars/**"
+      - ".streamlit/config.toml"
+      - ".github/workflows/desktop-build.yml"
+      - ".github/ci/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the setup file with build_exe.bat
+        shell: cmd
+        run: build_exe.bat /nopause
+
+      - name: Both programs are 64-bit and ask for no administrator rights
+        shell: pwsh
+        run: |
+          $py = "$env:LOCALAPPDATA\QARS-build\venv\Scripts\python.exe"
+          & $py .github\ci\check_manifest.py "$env:LOCALAPPDATA\QARS-build\dist\QA Report Studio\QA Report Studio.exe" "desktop\dist\QA Report Studio Setup.exe"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Install with the setup file
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "desktop\dist\QA Report Studio Setup.exe" -ArgumentList "--quiet","--no-launch" -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "setup exited with $($p.ExitCode)" }
+          $exe = "$env:LOCALAPPDATA\Programs\QA Report Studio\QA Report Studio.exe"
+          if (-not (Test-Path $exe)) { throw "the program was not installed" }
+          $shell = New-Object -ComObject WScript.Shell
+          $desktop = [Environment]::GetFolderPath("Desktop")
+          $programs = [Environment]::GetFolderPath("Programs")
+          foreach ($lnk in @("$desktop\QA Report Studio.lnk", "$programs\QA Report Studio.lnk")) {
+            if (-not (Test-Path $lnk)) { throw "missing shortcut $lnk" }
+            $target = $shell.CreateShortcut($lnk).TargetPath
+            Write-Host "$lnk -> $target"
+            if ($target -ne $exe) { throw "shortcut points at $target" }
+          }
+          Get-Content "$env:LOCALAPPDATA\QAReportStudio\install.log"
+          $size = (Get-ChildItem "$env:LOCALAPPDATA\Programs\QA Report Studio" -Recurse | Measure-Object Length -Sum).Sum / 1MB
+          Write-Host ("installed size: {0:N0} MB" -f $size)
+          $long = Get-ChildItem "$env:LOCALAPPDATA\Programs\QA Report Studio" -Recurse -File | Sort-Object { $_.FullName.Length } -Descending | Select-Object -First 1
+          Write-Host "longest path ($($long.FullName.Length) chars): $($long.FullName)"
+
+      - name: Self-check inside the installed program
+        shell: pwsh
+        run: |
+          $exe = "$env:LOCALAPPDATA\Programs\QA Report Studio\QA Report Studio.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList "--selftest","$env:RUNNER_TEMP\selftest.txt" -Wait -PassThru
+          Get-Content "$env:RUNNER_TEMP\selftest.txt"
+          if ($p.ExitCode -ne 0) { throw "self-check failed" }
+
+      - name: Open the app window in Edge and use it
+        shell: pwsh
+        run: |
+          $py = "$env:LOCALAPPDATA\QARS-build\venv\Scripts\python.exe"
+          & $py -m pip install --disable-pip-version-check -q playwright
+          & $py .github\ci\drive_window.py "$env:RUNNER_TEMP\shots"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Running setup again opens the installed app
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "desktop\dist\QA Report Studio Setup.exe" -ArgumentList "--quiet","--no-launch" -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "setup exited with $($p.ExitCode)" }
+          Get-Content "$env:LOCALAPPDATA\QAReportStudio\install.log"
+
+      - name: Keep the setup file
+        uses: actions/upload-artifact@v4
+        with:
+          name: QA-Report-Studio-Setup
+          path: desktop/dist/QA Report Studio Setup.exe
+          retention-days: 14
+
+      - name: Keep the screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-screenshots-and-logs
+          path: |
+            ${{ runner.temp }}/shots
+            ${{ runner.temp }}/selftest.txt*
+            ~/AppData/Local/QAReportStudio/*.log
+          retention-days: 7

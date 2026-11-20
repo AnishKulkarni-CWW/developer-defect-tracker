@@ -38,7 +38,12 @@ from datetime import datetime
 
 from . import ingest
 
-DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "library")
+# The library that ships inside the package. Run from a checkout or on a
+# server, this IS the library. The desktop build points QARS_LIBRARY_DIR at a
+# per-user copy instead (see qars/desktop.py), because an update replaces the
+# program folder and would take every month imported on that computer with it.
+PACKAGED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "library")
+DIR = os.environ.get("QARS_LIBRARY_DIR", "").strip() or PACKAGED_DIR
 INDEX = os.path.join(DIR, "index.json")
 
 WORKBOOK_EXT = (".xlsx", ".xlsm", ".xls", ".csv")

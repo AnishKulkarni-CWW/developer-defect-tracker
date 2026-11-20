@@ -60,7 +60,7 @@ def _db_with(market, tasks=(), blocks=()):
     return db
 
 
-SHIPPED_DIR = library.DIR
+SHIPPED_DIR = library.PACKAGED_DIR
 # The baseline most library tests start from: two markets with a report, one
 # with nothing. India's own report shipped later and is tested on its own.
 BASELINE_DECKS = {"C3/C3_Quality_Defect_Report_2026.pptx",
@@ -1668,6 +1668,242 @@ with TempLibrary("shipped") as _tla:
     check("The answers are never among the attachments",
           not any(m.startswith("2_attachments/") and "Answer" in m for m in _members))
     shutil.rmtree(_built, ignore_errors=True)
+
+# ==========================================================================
+section("DESKTOP — each user's library lives outside the program folder")
+# ==========================================================================
+from qars import desktop as dsk                                    # noqa: E402
+
+_dt_root = tempfile.mkdtemp(prefix="qars_desktop_")
+
+
+def _dt_bundle(name, files, extra_index=(), aliases=None):
+    """A build's library: the named shipped files and an index listing them."""
+    folder = os.path.join(_dt_root, name)
+    shutil.rmtree(folder, ignore_errors=True)
+    with open(os.path.join(SHIPPED_DIR, "index.json"), encoding="utf-8") as fh:
+        rows = [e for e in json.load(fh)["entries"] if e["file"] in files]
+    for e in rows:
+        dest = os.path.join(folder, e["file"])
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copy2(os.path.join(SHIPPED_DIR, e["file"]), dest)
+    for rel, data, row in extra_index:
+        dest = os.path.join(folder, rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "wb") as fh:
+            fh.write(data)
+        rows.append(row)
+    with open(os.path.join(folder, "index.json"), "w", encoding="utf-8") as fh:
+        json.dump({"entries": rows}, fh, indent=1)
+    if aliases is not None:
+        with open(os.path.join(folder, "aliases.json"), "w", encoding="utf-8") as fh:
+            json.dump(aliases, fh)
+    return folder
+
+
+def _dt_index(folder):
+    with open(os.path.join(folder, "index.json"), encoding="utf-8") as fh:
+        return {e["file"]: e for e in json.load(fh)["entries"]}
+
+
+_JUL, _AUG, _SEP = ("Japan/2026-07_July_2026_Japan.xlsx", "Japan/2026-08_August_2026_Japan.xlsx",
+                    "Japan/2026-09_September_2026_Japan.xlsx")
+_v1 = _dt_bundle("build1", {_JUL, _AUG})
+_user = os.path.join(_dt_root, "home", "library")
+
+rep = dsk.sync_library(_v1, _user)
+check("First start copies the whole shipped library in",
+      rep["action"] == "seeded" and sorted(rep["added"]) == sorted([_JUL, _AUG])
+      and all(os.path.exists(os.path.join(_user, f)) for f in (_JUL, _AUG)), str(rep))
+check("The copied entries keep their reading corrections (forced months)",
+      _dt_index(_user)[_JUL].get("force_month") == [2026, 7])
+check("Every start after that leaves the library alone",
+      dsk.sync_library(_v1, _user)["action"] == "current")
+
+# A month imported on this computer, through the library module itself.
+_saved_lib = (library.DIR, library.INDEX)
+library.DIR, library.INDEX = _user, os.path.join(_user, "index.json")
+library._CACHE.clear()
+try:
+    _entry, _ = library.add("Japan", "October 2026 Japan.csv", _workbook(2026, 10, n=12))
+finally:
+    library.DIR, library.INDEX = _saved_lib
+    library._CACHE.clear()
+_mine = _entry["file"]
+check("An import on this computer is kept in the user's library, not the program's",
+      os.path.exists(os.path.join(_user, _mine))
+      and not os.path.exists(os.path.join(SHIPPED_DIR, _mine)), _mine)
+
+# The next build ships September, drops July and changes nothing else.
+_v2 = _dt_bundle("build2", {_AUG, _SEP})
+rep = dsk.sync_library(_v2, _user)
+_idx = _dt_index(_user)
+check("An update adds the months the new build ships",
+      rep["action"] == "merged" and rep["added"] == [_SEP] and _SEP in _idx, str(rep))
+check("…and retires a shipped file the new build no longer has",
+      rep["removed"] == [_JUL] and _JUL not in _idx
+      and not os.path.exists(os.path.join(_user, _JUL)))
+check("…and never touches a month imported on this computer",
+      _mine in _idx and not _idx[_mine].get("shipped")
+      and os.path.exists(os.path.join(_user, _mine)))
+check("Shipped entries stay marked as shipped (they cannot be removed in the app)",
+      _idx[_AUG].get("shipped") is True and _idx[_SEP].get("shipped") is True)
+
+# A shipped file the user replaced with a sheet of the same name stays theirs.
+with open(os.path.join(_user, _AUG), "wb") as _fh:
+    _fh.write(b"the user's own corrected August sheet")
+_idx[_AUG] = dict(_idx[_AUG], shipped=False, source_name="August 2026 Japan.xlsx")
+with open(os.path.join(_user, "index.json"), "w", encoding="utf-8") as _fh:
+    json.dump({"entries": list(_idx.values())}, _fh)
+_v3 = _dt_bundle("build3", {_AUG, _SEP},
+                 extra_index=[("C3/2026-10_October_2026_C3.csv", _workbook(2026, 10, n=5),
+                               {"id": "C3-oct", "market": "C3",
+                                "file": "C3/2026-10_October_2026_C3.csv", "kind": "workbook",
+                                "shipped": False, "periods": ["2026-10"],
+                                "added": "2026-11-01T00:00:00",
+                                "source_name": "October 2026 C3.csv"})])
+rep = dsk.sync_library(_v3, _user)
+with open(os.path.join(_user, _AUG), "rb") as _fh:
+    _kept = _fh.read()
+check("A shipped sheet the user replaced is never overwritten by an update",
+      _kept == b"the user's own corrected August sheet" and _AUG not in rep["updated"])
+check("A month imported into the repository before the build ships with it too",
+      "C3/2026-10_October_2026_C3.csv" in rep["added"]
+      and _dt_index(_user)["C3/2026-10_October_2026_C3.csv"]["shipped"] is True)
+
+# The user removes their replacement: the shipped August is not resurrected.
+_idx = _dt_index(_user)
+os.remove(os.path.join(_user, _AUG))
+del _idx[_AUG]
+with open(os.path.join(_user, "index.json"), "w", encoding="utf-8") as _fh:
+    json.dump({"entries": list(_idx.values())}, _fh)
+_v4 = _dt_bundle("build4", {_AUG, _SEP, "Japan/Japan_Quality_Defect_Report_2026.pptx"})
+rep = dsk.sync_library(_v4, _user)
+check("A file the user took out is not brought back by the next update",
+      _AUG not in rep["added"] and not os.path.exists(os.path.join(_user, _AUG))
+      and "Japan/Japan_Quality_Defect_Report_2026.pptx" in rep["added"], str(rep))
+
+# Name decisions: the user's own win, new shipped ones are added.
+_aliases_user = os.path.join(_user, "aliases.json")
+with open(_aliases_user, "w", encoding="utf-8") as _fh:
+    json.dump({"aliases": {"Neha Lal": ["Neha"]}, "distinct": [["A One", "A Two"]]}, _fh)
+_v5 = _dt_bundle("build5", {_SEP}, aliases={
+    "aliases": {"Neha Gupta": ["Neha"], "Kapil Kumar": ["Kapil K"]},
+    "distinct": [["B One", "B Two"]]})
+dsk.sync_library(_v5, _user)
+with open(_aliases_user, encoding="utf-8") as _fh:
+    _al = json.load(_fh)
+check("A name decision made on this computer wins over a shipped one",
+      _al["aliases"].get("Neha Lal") == ["Neha"] and "Neha Gupta" not in _al["aliases"])
+check("A new shipped name decision is added", _al["aliases"].get("Kapil Kumar") == ["Kapil K"])
+check("Pairs marked as two people are combined",
+      ["A One", "A Two"] in _al["distinct"] and ["B One", "B Two"] in _al["distinct"])
+
+# A damaged index: files land, nothing is written over the library's own fallback.
+_user2 = os.path.join(_dt_root, "home2", "library")
+dsk.sync_library(_v1, _user2)
+with open(os.path.join(_user2, "index.json"), "w", encoding="utf-8") as _fh:
+    _fh.write("{ not json")
+rep = dsk.sync_library(_v2, _user2)
+with open(os.path.join(_user2, "index.json"), encoding="utf-8") as _fh:
+    _still = _fh.read()
+check("With a damaged index, new shipped files still land and the index is left alone",
+      _SEP in rep["added"] and os.path.exists(os.path.join(_user2, _SEP))
+      and _still == "{ not json", str(rep))
+check("…and a retired shipped file still goes",
+      _JUL in rep["removed"] and not os.path.exists(os.path.join(_user2, _JUL)))
+
+# prepare(): the environment the app is started with.
+_saved_env = {k: os.environ.get(k) for k in ("QARS_LIBRARY_DIR", "QARS_DATA_DIR",
+                                              "QARS_DESKTOP", "QARS_STORAGE")}
+try:
+    _home, rep = dsk.prepare(_v2, root=os.path.join(_dt_root, "home3"))
+    check("prepare() points the app at the per-user library and working copy",
+          os.environ["QARS_LIBRARY_DIR"] == os.path.join(_home, "library")
+          and os.environ["QARS_DATA_DIR"] == os.path.join(_home, "data")
+          and os.environ["QARS_DESKTOP"] == "1" and rep["action"] == "seeded")
+finally:
+    for _k, _v in _saved_env.items():
+        if _v is None:
+            os.environ.pop(_k, None)
+        else:
+            os.environ[_k] = _v
+_qh = os.environ.get("QARS_HOME")
+os.environ["QARS_HOME"] = os.path.join(_dt_root, "override")
+try:
+    check("QARS_HOME moves the per-user folder", dsk.home() == os.path.join(_dt_root, "override"))
+finally:
+    if _qh is None:
+        os.environ.pop("QARS_HOME", None)
+    else:
+        os.environ["QARS_HOME"] = _qh
+
+# Shutting down from inside the page.
+check("No Shut down button unless the launcher registered how to quit",
+      not dsk.can_shut_down() and dsk.shut_down() is False)
+_called = []
+dsk.on_shutdown(lambda: _called.append(1))
+_ok = dsk.shut_down()
+import time as _time                                                # noqa: E402
+_time.sleep(0.2)
+check("Shut down runs what the launcher registered", _ok and _called == [1])
+dsk._SHUTDOWN.clear()
+shutil.rmtree(_dt_root, ignore_errors=True)
+
+# ==========================================================================
+section("DESKTOP BUILD — what the Windows program is made of")
+# ==========================================================================
+_DESK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "desktop")
+sys.path.insert(0, _DESK)
+import app_info                                                    # noqa: E402
+
+
+def _read(*parts):
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts),
+              encoding="utf-8") as fh:
+        return fh.read()
+
+
+_spec = _read("desktop", "qa_report_studio.spec")
+_setup_spec = _read("desktop", "installer.spec")
+_launcher = _read("desktop", "run_app.py")
+_installer = _read("desktop", "installer.py")
+_bat = _read("build_exe.bat")
+check("Neither .exe asks for administrator rights (asInvoker manifest)",
+      "uac_admin=False" in _spec and "uac_admin=False" in _setup_spec)
+check("No UPX compression (an antivirus false-positive trigger)",
+      "upx=False" in _spec and "upx=False" in _setup_spec)
+check("The program has no console window", "CONSOLE = False" in _spec)
+check("No Tcl/Tk in the program", '"tkinter"' in _spec and '"_tkinter"' in _spec)
+check("Only the theme is taken from .streamlit — never secrets.toml",
+      'os.path.join(ROOT, ".streamlit", "config.toml")' in _spec
+      and '(".streamlit", ".streamlit")' not in _spec and "refusing to bundle a secrets.toml" in _spec)
+check("The server listens on 127.0.0.1 only (no firewall prompt, nothing on the network)",
+      'BIND_HOST = "127.0.0.1"' in _launcher and '"0.0.0.0"' not in _launcher)
+check("Its ports are not the ones the QA Hours Dashboard uses (both can be open at once)",
+      app_info.PREFERRED_PORT not in (8501, 8599) and app_info.LOCK_PORT not in (8501, 8599))
+check("Setup installs into the user's own AppData",
+      'local_appdata() / "Programs" / APP_NAME' in _installer)
+check("The app started by setup cannot mistake setup's files for its own",
+      "PYINSTALLER_RESET_ENVIRONMENT" in _installer)
+for _f in ("requirements-lock.txt", "qa_report_studio.spec", "installer.spec",
+           "make_payload.py", "check_app.py"):
+    check(f"build_exe.bat uses desktop/{_f}, and it exists",
+          _f in _bat and os.path.isfile(os.path.join(_DESK, _f)))
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt"),
+          encoding="utf-8") as _fh:
+    _needs = [ln.split(">")[0].split("=")[0].split("<")[0].strip().lower()
+              for ln in _fh if ln.strip() and not ln.lstrip().startswith("#")]
+_lock = _read("desktop", "requirements-lock.txt").lower()
+_pins = {ln.split("==")[0].strip() for ln in _lock.splitlines() if "==" in ln}
+check("Every library the app needs is pinned for the build",
+      all(n in _pins for n in _needs), ", ".join(n for n in _needs if n not in _pins))
+check("The build tool itself is pinned", "pyinstaller" in _pins)
+check("The window's icon and the program's icon are in place",
+      os.path.getsize(os.path.join(_DESK, "icon.ico")) > 10_000
+      and os.path.getsize(os.path.join(_DESK, "icon.png")) > 10_000)
+check("The window title the launcher looks for is the app's own page title",
+      f'APP_TITLE = "{app_info.APP_NAME}"' in _read("app.py"))
 
 # ==========================================================================
 print("\n" + "=" * 62)

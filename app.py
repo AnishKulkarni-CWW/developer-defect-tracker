@@ -35,8 +35,8 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from qars import (charts, deck, ingest, library, metrics, normalize as nz,  # noqa: E402
-                  pdf, publish, store, theme as T)
+from qars import (charts, deck, desktop, ingest, library, metrics,  # noqa: E402
+                  normalize as nz, pdf, publish, store, theme as T)
 
 
 # --------------------------------------------------------------------------
@@ -85,6 +85,15 @@ RULE_NOTE = ("Error Free = No Error + Observation   •   "
 
 APP_TITLE = "QA Report Studio"
 APP_TAGLINE = "Defects to better products"
+
+# Set by the desktop launcher (desktop/run_app.py). A desktop window is one
+# person's program on one computer, not a server: the app says so wherever it
+# talks about keeping months, switches publishing off (it works offline), and
+# offers a Shut down button, since there is nobody else to keep it running for.
+DESKTOP = os.environ.get("QARS_DESKTOP") == "1"
+# The window's icon in the desktop app: Edge shows a page's own icon in the
+# title bar and on the taskbar, so it matches the shortcut that opened it.
+ICON_PNG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "desktop", "icon.png")
 MONTHS = metrics.MONTH_FULL
 FS = metrics.fmt_score
 
@@ -100,8 +109,9 @@ PAGES = [
 ]
 PAGE_BY_KEY = {p[0]: p for p in PAGES}
 
-st.set_page_config(page_title=APP_TITLE, page_icon="🐞", layout="wide",
-                   initial_sidebar_state="expanded")
+st.set_page_config(page_title=APP_TITLE,
+                   page_icon=ICON_PNG if DESKTOP and os.path.isfile(ICON_PNG) else "🐞",
+                   layout="wide", initial_sidebar_state="expanded")
 
 
 # ==========================================================================
@@ -172,6 +182,8 @@ def publish_config():
     Reading secrets throws when no secrets file exists, which is the normal
     case on a laptop, so it is not an error — publishing simply stays off.
     """
+    if DESKTOP:
+        return publish.disable()
     cfg = {}
     try:
         section = st.secrets.get("github", {})
@@ -421,6 +433,15 @@ def sidebar():
            f'<div class="s">{esc(org or "No brand set")}</div>'
            f'</div></div>')
 
+        # Desktop app only. Closing the window does the same; this is for the
+        # person who looks for a way to quit inside the program, as they would
+        # in any other desktop application. Nothing is lost: every change is
+        # already saved by the time this button can be pressed.
+        if DESKTOP and desktop.can_shut_down():
+            if st.button("⏻  Shut down app", key="quit_app_btn", **WIDE_BTN):
+                desktop.shut_down()
+                st.session_state.closing = True
+
 
 def topbar():
     """Market, period and appearance — chosen once, applied on every page."""
@@ -534,6 +555,12 @@ def keep_note():
     needs saying; on a hosted server the answer depends on publishing.
     """
     pub = publish.status()
+    if DESKTOP:
+        if not library.writable():
+            md('<div class="qrs-note">⚠️ <b>The app cannot write to its folder on this '
+               'computer</b>, so an import lasts only until the app is closed. The folder '
+               f'is <code>{esc(library.DIR)}</code>.</div>')
+        return
     if pub["enabled"]:
         md(f'<div class="qrs-ok">✅ Imports are committed to <code>{esc(pub["repo"])}</code> '
            f'on <code>{esc(pub["branch"])}</code> and become part of the app — next month '
@@ -785,6 +812,12 @@ def _announce_import(kept, session_only, total):
         by_market.setdefault(entry["market"], []).append((entry, replaced))
     months = {m: ", ".join(sorted({p for e, _ in items for p in e["periods"]}))
               for m, items in by_market.items()}
+    if not publish.enabled() and DESKTOP:
+        for market, items in sorted(by_market.items()):
+            flash("info", f"{market}: {len(items)} file(s) saved to the report library on "
+                          f"this computer ({months[market]}). They load every time the app "
+                          "starts, so you never need to upload those months again.")
+        return
     if not publish.enabled():
         for market, items in sorted(by_market.items()):
             flash("info", f"{market}: {len(items)} file(s) added to the report library "
@@ -1834,6 +1867,22 @@ def _library_row_note(r, names):
     return " · ".join(bits)
 
 
+def _can_open_folder():
+    """Only the desktop app runs on the computer whose screen it is shown on."""
+    return DESKTOP and (os.name == "nt" or sys.platform == "darwin")
+
+
+def _open_folder(path):
+    try:
+        if os.name == "nt":
+            os.startfile(path)                                # noqa: S606
+        else:
+            import subprocess
+            subprocess.Popen(["open", path])
+    except OSError as exc:
+        st.error(f"Could not open the folder: {exc}")
+
+
 def _dm_library():
     """
     The months the app keeps, and how permanent they actually are.
@@ -1852,7 +1901,13 @@ def _dm_library():
                "loaded on every start-up. This is why you only ever upload the newest "
                "month.")
 
-    if pub["enabled"]:
+    if DESKTOP and kept_ok:
+        md('<div class="qrs-ok">✅ <b>Kept on this computer.</b> Every file imported here '
+           'is saved in the report library folder and loaded each time the app starts. '
+           'Updating the app keeps it. Download the library pack below to back it up or '
+           'to give another computer the same history.</div>')
+        st.caption(f"Library folder: `{library.DIR}`")
+    elif pub["enabled"]:
         md(f'<div class="qrs-ok">✅ <b>Imports are published.</b> New files are '
            f'committed to <code>{esc(pub["repo"])}</code> on '
            f'<code>{esc(pub["branch"])}</code>, so they survive a server restart and '
@@ -1891,9 +1946,16 @@ def _dm_library():
 
     c1, c2 = st.columns(2)
     with c1:
-        bar("Make it permanent")
+        bar("Back it up" if DESKTOP else "Make it permanent")
         with st.container(border=True):
-            if pub["enabled"]:
+            if DESKTOP:
+                st.caption("Everything the report library holds, as one zip: a backup, or "
+                           "the way to give another computer — or the online app — the "
+                           "same months. Restore it there with the button on the right.")
+                if _can_open_folder() and st.button("📂  Open the library folder",
+                                                    key="lib_open", **WIDE_BTN):
+                    _open_folder(library.DIR)
+            elif pub["enabled"]:
                 st.caption(f"Commits every library file to {pub['repo']}@"
                            f"{pub['branch']}. Imports do this on their own; this is "
                            "for a server whose folder is ahead of the repository.")
@@ -1924,7 +1986,10 @@ def _dm_library():
     with c2:
         bar("Restore a library pack")
         with st.container(border=True):
-            st.caption("Unpacks a downloaded pack over this server's library. Use it "
+            st.caption(("Unpacks a downloaded pack over this computer's library. Use it "
+                        "to bring in the history from another computer or the online app.")
+                       if DESKTOP else
+                       "Unpacks a downloaded pack over this server's library. Use it "
                        "to move history between machines.")
             up = st.file_uploader("Library pack (.zip)", type=["zip"],
                                   key=f"lib_restore_{st.session_state.upload_epoch}",
@@ -2311,6 +2376,10 @@ def page_settings():
         md(" ".join(pill(f"{m}: {n:,} rows", T.BRAND if n else T.TEXT_MUTED)
                     for m, n in counts.items())
            + f' {pill("Storage: " + store.storage_mode(), T.BLUE)}')
+        if DESKTOP:
+            st.caption(f"Kept on this computer — the report library in `{library.DIR}`, "
+                       f"the working copy in `{store.DATA_DIR}`. Updating the app keeps "
+                       "both.")
         st.markdown("")
         d1, d2 = st.columns(2)
         d1.download_button("📤  Export database (.json)", store.export_bytes(db),
@@ -2355,6 +2424,41 @@ def page_settings():
 # ==========================================================================
 # PAGE — help
 # ==========================================================================
+def _help_hosted():
+    """Keeping months on a hosted server: what publishing is for."""
+    bar("Making months permanent on a hosted server")
+    st.markdown("""
+On a laptop the library folder is simply a folder — what goes in stays in.
+
+A hosted server (Streamlit Community Cloud and the like) is different: it
+rebuilds its disk from the repository every time it restarts. An imported file
+is shared with everyone using the app *right now*, but to outlive a restart it
+has to reach the repository. Two ways:
+
+1. **Automatic** (set up once). Create a GitHub fine-grained token for this
+   repository with *Contents: Read and write*. In Streamlit Community Cloud open
+   the app's **⋮ → Settings → Secrets** and paste:
+
+   ```toml
+   [github]
+   token  = "github_pat_…"
+   repo   = "owner/repository"
+   branch = "main"          # the branch the app is deployed from
+   ```
+
+   Save, let the app restart, then press **Check connection** on
+   *Data Manager → Report library*. From then on every import is committed to
+   the repository as one commit, and becomes part of the app.
+
+2. **By hand.** *Data Manager → Report library → Download the library pack*,
+   unzip it over `qars/library/` in the repository, and commit.
+
+Either way the months become part of the app, and the next person to open it
+has them. The Report library tab says which of these applies, in those words,
+rather than leaving you to guess.
+""")
+
+
 def page_help():
     page_header("Help", "How every number on the page is worked out.")
 
@@ -2472,37 +2576,26 @@ person (or two people), that decision is stored in the library next to the
 months, so it is made once and holds for everyone.
 """)
 
-    bar("Making months permanent on a hosted server")
-    st.markdown("""
-On a laptop the library folder is simply a folder — what goes in stays in.
+    if DESKTOP:
+        bar("Where the desktop app keeps your months")
+        st.markdown(f"""
+Everything the app keeps is on this computer, in your own user folder:
 
-A hosted server (Streamlit Community Cloud and the like) is different: it
-rebuilds its disk from the repository every time it restarts. An imported file
-is shared with everyone using the app *right now*, but to outlive a restart it
-has to reach the repository. Two ways:
+| Folder | What is in it |
+|---|---|
+| `{library.DIR}` | the report library — the shipped reports and every sheet imported here |
+| `{store.DATA_DIR}` | the working copy, settings and automatic backups |
 
-1. **Automatic** (set up once). Create a GitHub fine-grained token for this
-   repository with *Contents: Read and write*. In Streamlit Community Cloud open
-   the app's **⋮ → Settings → Secrets** and paste:
+Nothing is sent anywhere, and the app needs no internet connection. Updating
+the app keeps both folders; a new version that ships more months adds them
+without touching anything imported here.
 
-   ```toml
-   [github]
-   token  = "github_pat_…"
-   repo   = "owner/repository"
-   branch = "main"          # the branch the app is deployed from
-   ```
-
-   Save, let the app restart, then press **Check connection** on
-   *Data Manager → Report library*. From then on every import is committed to
-   the repository as one commit, and becomes part of the app.
-
-2. **By hand.** *Data Manager → Report library → Download the library pack*,
-   unzip it over `qars/library/` in the repository, and commit.
-
-Either way the months become part of the app, and the next person to open it
-has them. The Report library tab says which of these applies, in those words,
-rather than leaving you to guess.
+To move your history to another computer, or to the online app, use
+*Data Manager → Report library → Download the library pack* here and
+*Restore a library pack* there.
 """)
+    else:
+        _help_hosted()
 
     bar("Finding your way around")
     st.markdown("""
@@ -2542,6 +2635,11 @@ def main():
     st.markdown(T.app_css(dark=st.session_state.dark), unsafe_allow_html=True)
 
     sidebar()
+    if st.session_state.get("closing"):
+        md(f'<div class="qrs-info" style="margin-top:18vh;text-align:center">'
+           f'<b>{esc(APP_TITLE)} is closing.</b><br>Everything is saved — open it again '
+           'from the Desktop shortcut whenever you need it.</div>')
+        st.stop()
     query = topbar()
 
     # Claimed before the page body is drawn, so the progress bar sits at the top
