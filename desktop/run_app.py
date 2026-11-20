@@ -430,7 +430,25 @@ def write_page(state: Path, message: str, hint: str = "", redirect_to: str = "",
     if _ICON is None:
         _ICON = _icon_data_uri()
     if redirect_to:
-        script = f"location.replace({json.dumps(redirect_to)});"
+        # Straight on to the app while this page is fresh (the normal start).
+        # Opened later from a stale pin of the window, it first checks the app
+        # is running - by loading the server's own icon, which a file:// page
+        # may do - and otherwise says how to start it, instead of showing the
+        # browser's "can't reach this page".
+        script = (
+            "(function(){var url=" + json.dumps(redirect_to) + ",written="
+            + str(int(time.time() * 1000)) + ";"
+            "if(Date.now()-written<60000){location.replace(url);return;}"
+            "function probe(){var i=new Image();"
+            "i.onload=function(){location.replace(url);};"
+            "i.onerror=function(){"
+            "document.querySelector('.msg').textContent=" + json.dumps(f"{APP_TITLE} is not running") + ";"
+            "document.querySelector('.hint').textContent="
+            + json.dumps(f"Open it from the {APP_TITLE} shortcut on the Desktop or in the "
+                         "Start menu. This window can be closed.") + ";"
+            "document.querySelector('.bar').className='bar stop';"
+            "setTimeout(probe,3000);};"
+            "i.src=url+'/favicon.png?t='+Date.now();}probe();})();")
     elif failed:
         script = ""
     else:

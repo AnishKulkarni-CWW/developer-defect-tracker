@@ -25,9 +25,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -88,19 +88,26 @@ jobs:
           Get-Content "$env:LOCALAPPDATA\QAReportStudio\install.log"
 
       - name: Keep the setup file
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: QA-Report-Studio-Setup
           path: desktop/dist/QA Report Studio Setup.exe
           retention-days: 14
 
+      - name: Gather the screenshots and logs
+        if: always()
+        shell: pwsh
+        run: |
+          $out = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\evidence"
+          Copy-Item "$env:RUNNER_TEMP\shots\*" $out -ErrorAction SilentlyContinue
+          Copy-Item "$env:RUNNER_TEMP\selftest.txt*" $out -ErrorAction SilentlyContinue
+          Copy-Item "$env:LOCALAPPDATA\QAReportStudio\*.log" $out -ErrorAction SilentlyContinue
+          Get-ChildItem $out | Format-Table Name, Length
+
       - name: Keep the screenshots and logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: test-screenshots-and-logs
-          path: |
-            ${{ runner.temp }}/shots
-            ${{ runner.temp }}/selftest.txt*
-            ~/AppData/Local/QAReportStudio/*.log
+          path: ${{ runner.temp }}/evidence
           retention-days: 7

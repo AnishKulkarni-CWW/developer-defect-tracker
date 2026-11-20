@@ -59,10 +59,26 @@ def cdp_up():
         return False
 
 
-def start():
+def start(fresh_log=True):
+    if fresh_log:
+        # The launcher starts a new log; never read the last run's by mistake.
+        for name in ("launcher.log", "launcher-again.log"):
+            try:
+                os.remove(os.path.join(HOME, name))
+            except OSError:
+                pass
     started = time.time()
     proc = subprocess.Popen([EXE], env=ENV)
     return proc, started
+
+
+def screen(name):
+    """The whole screen, as a person would see it."""
+    try:
+        from PIL import ImageGrab
+        ImageGrab.grab().save(os.path.join(SHOTS, name))
+    except Exception as exc:
+        print(f"(no screen capture: {exc})")
 
 
 def app_windows():
@@ -125,11 +141,13 @@ with sync_playwright() as p:
     page.set_default_timeout(90000)
     page.get_by_role("button", name="⏻  Shut down app").wait_for()
     check("Page title is the app's", page.title() == "QA Report Studio", page.title())
-    bars = page.evaluate("() => [window.locationbar.visible, window.toolbar.visible,"
-                         " window.menubar.visible]")
-    check("No address bar, toolbar or menu bar (a standalone app window)",
-          bars == [False, False, False], str(bars))
+    # A tabbed browser window spends ~80-120 px above the page on tabs and an
+    # address bar; an app window only a title bar.
+    chrome = page.evaluate("() => window.outerHeight - window.innerHeight")
+    check("No tabs or address bar above the page (a standalone app window)",
+          0 <= chrome < 70, f"{chrome}px of window frame above the page")
     page.screenshot(path=os.path.join(SHOTS, "1_home.png"))
+    screen("1_screen.png")
     check("A native window titled 'QA Report Studio' is on screen", len(app_windows()) >= 1,
           str(app_windows()))
 
@@ -143,13 +161,21 @@ with sync_playwright() as p:
     kept = glob.glob(os.path.join(HOME, "library", "India", "2026-10_*"))
     check("An imported month is saved in the user's own library", kept, str(kept))
 
-    downloads = os.path.join(os.environ["USERPROFILE"], "Downloads")
-    before = set(glob.glob(os.path.join(downloads, "*.pptx")))
     page.get_by_role("button", name="Generate report").first.click()
-    page.get_by_role("button", name="PowerPoint (.pptx)").click()
-    got = wait_for(lambda: set(glob.glob(os.path.join(downloads, "*.pptx"))) - before, 60)
-    check("A report downloads from the window to the Downloads folder", got, str(got))
-    page.screenshot(path=os.path.join(SHOTS, "3_results.png"))
+    button = page.get_by_role("button", name="PowerPoint (.pptx)")
+    button.wait_for()
+    with page.expect_download(timeout=60000) as info:
+        button.click()
+    dl = info.value
+    saved = os.path.join(SHOTS, dl.suggested_filename)
+    dl.save_as(saved)
+    with open(saved, "rb") as fh:
+        head = fh.read(4)
+    check("A report downloads from the window", head == b"PK\x03\x04"
+          and os.path.getsize(saved) > 50_000,
+          f"{dl.suggested_filename}, {os.path.getsize(saved) // 1024} KB")
+    page.screenshot(path=os.path.join(SHOTS, "3_report.png"))
+    screen("3_screen.png")
 
     page.get_by_role("button", name="⏻  Shut down app").click()
     try:
@@ -166,9 +192,11 @@ proc, t0 = start()
 ready = wait_for(lambda: "app ready" in log_text(), 240)
 check("Second start is ready", ready, log_text().split("app ready after")[-1].split("\n")[0])
 check("Second start finds the library already in place", "report library: current" in log_text())
+time.sleep(2)
+screen("4_second_start.png")
 hwnds = wait_for(app_windows, 30)
 time.sleep(3)
-second, t1 = start()
+second, t1 = start(fresh_log=False)
 try:
     second.wait(timeout=60)
     quick = True

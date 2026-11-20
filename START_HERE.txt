@@ -1,0 +1,64 @@
+QA REPORT STUDIO  -  MAKE THE WINDOWS PROGRAM (.EXE)
+====================================================
+
+You build ONE setup file, once, on any Windows 10 or 11 PC that has internet.
+The people you give it to need nothing: no Python, no internet, no admin
+password. They double-click it, and the app opens in its own window - not in
+a browser tab - and works completely offline.
+
+
+STEP 1 - Install Python on the PC that builds (once, 5 minutes)
+-------------------------------------------------------------------
+  Go to  https://www.python.org/downloads/windows/  and download a
+  "Windows installer (64-bit)" for Python 3.12, 3.13 or 3.14.
+  (NOT 3.15 or newer yet - some libraries are not ready for it.)
+
+  Run it. On the FIRST screen:
+    - TICK   "Add python.exe to PATH"
+    - if you have no admin rights, UNTICK "Use admin privileges when
+      installing py.exe"
+  then click "Install Now".
+
+  Or, in one line (Command Prompt, no admin needed):
+      winget install -e --id Python.Python.3.12 --scope user
+
+
+STEP 2 - Double-click  build_exe.bat  (it is in this folder)
+-------------------------------------------------------------------
+  A black window shows each step. The first time takes 10-20 minutes,
+  because it downloads the libraries once. Later builds take 5-10 minutes.
+  It ends with "DONE" and offers to show you the file.
+
+
+STEP 3 - Give people this ONE file
+-------------------------------------------------------------------
+      desktop\dist\QA Report Studio Setup.exe
+
+  By email, Teams, OneDrive, a shared drive or a USB stick.
+
+
+WHAT THEY DO
+-------------------------------------------------------------------
+  1. Double-click "QA Report Studio Setup.exe". A small window shows a
+     progress bar for a few seconds. No admin password is asked for.
+  2. A "QA Report Studio" icon appears on their Desktop and in the Start
+     menu, and the app opens in its own window.
+  3. From then on they open it from that icon, like any other program.
+     To quit: close the window, or press "Shut down app" in its menu.
+
+  The first time a DOWNLOADED copy is opened, Windows may show "Windows
+  protected your PC". Click "More info", then "Run anyway". Windows says
+  this about any program that is not signed with a paid certificate. It is
+  not an admin prompt, and it does not come back.
+
+
+NO WINDOWS PC TO BUILD ON?  GITHUB BUILDS IT FOR YOU
+-------------------------------------------------------------------
+  The repository builds and tests the setup file on a Windows machine every
+  time the app changes. On GitHub: Actions tab -> "Windows desktop build"
+  -> the latest green run -> Artifacts -> "QA-Report-Studio-Setup".
+  Download it, unzip it, and you have the same setup file.
+
+
+Everything else - updating, where the data is kept, backups, and what to do
+if something goes wrong - is in  desktop\BUILD_INSTRUCTIONS.md

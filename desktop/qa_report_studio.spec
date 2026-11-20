@@ -203,8 +203,10 @@ a = Analysis(
 # --------------------------------------------------------------------------
 _JUNK_SUFFIXES = (".lib", ".a", ".h", ".hpp", ".pyx", ".pxd", ".pxi",
                   ".c", ".cc", ".cpp", ".cmake", ".pc", ".exp", ".map")
+# streamlit/.agents holds templates for the `streamlit skills` command, never
+# used by `streamlit run` - and the deepest paths in the whole program.
 _JUNK_PARTS = ("/include/", "/includes/", "/tests/", "/test/",
-               "/sample_data/", "/__pycache__/")
+               "/sample_data/", "/__pycache__/", "/streamlit/.agents/")
 
 
 def _is_junk(dest):

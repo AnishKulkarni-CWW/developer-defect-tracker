@@ -26,6 +26,13 @@ see [The report library](#the-report-library).
 
 ---
 
+**Need it as a Windows program?** Double-click **`build_exe.bat`** — the three
+steps are in [`START_HERE.txt`](START_HERE.txt). It makes one setup file that
+installs without an administrator password and opens the app in its own
+window, completely offline. Details: [section 11](#11-the-windows-desktop-app-exe).
+
+---
+
 **Moving to an Omni agent?** The [`agent/`](agent/README.md) folder holds the
 text for every Agent Builder section, the files the agent needs, a test with
 known answers, and the procedure. `python agent/build_pack.py` builds the pack
@@ -45,7 +52,7 @@ from the report library.
 8. [Running the tests](#8-running-the-tests)
 9. [Troubleshooting](#9-troubleshooting)
 10. [Deploying to Streamlit Community Cloud](#10-deploying-to-streamlit-community-cloud)
-11. [Converting to a .exe later](#11-converting-to-a-exe-later)
+11. [The Windows desktop app (.exe)](#11-the-windows-desktop-app-exe)
 12. [Project structure](#12-project-structure)
 
 ---
@@ -640,8 +647,8 @@ one commit that a restarted server still has.
 Both end with their own count:
 
 ```
-  410 passed, 0 failed
-  314 passed, 0 failed
+  448 passed, 0 failed
+  328 passed, 0 failed
 ```
 
 ---
@@ -816,33 +823,36 @@ worth mentioning before you push during working hours.
 
 ---
 
-## 11. Converting to a .exe later
+## 11. The Windows desktop app (.exe)
 
-The app was built with freezing in mind: matplotlib rather than a browser-based
-chart engine, ReportLab rather than a LibreOffice conversion, and drawn icons
-rather than icon fonts — so nothing needs an external binary at runtime.
+`build_exe.bat` packages the app as a Windows program, the same way as the QA
+Hours Dashboard: **one file to give to people**, `QA Report Studio Setup.exe`.
 
-Create a small `run_exe.py` launcher that calls
-`streamlit.web.bootstrap.run()` on `app.py`, then:
+- **One click, no admin.** Setup unpacks the program into the user's own
+  `%LOCALAPPDATA%\Programs\QA Report Studio` in a few seconds, adds a Desktop
+  and Start-menu icon, and opens the app. Both `.exe` files carry an
+  *asInvoker* manifest, so Windows never asks for an administrator password.
+- **Its own window.** The app opens in a standalone window — Edge in app mode,
+  on a private profile: no tabs, no address bar, its own taskbar button and
+  icon. A "Starting up…" page is on screen within a second; closing the window,
+  or the new **Shut down app** button, stops everything.
+- **Offline, on every Windows 10 and 11 PC.** Python, Streamlit, the report
+  engine and the report library are all inside; the server listens on
+  `127.0.0.1` only, so the firewall never asks. Publishing to GitHub is off in
+  the desktop app.
+- **Months survive updates.** The desktop app keeps its library and working
+  copy in `%LOCALAPPDATA%\QAReportStudio`, outside the program folder. A newer
+  setup file adds the months it ships with and keeps everything imported on
+  that computer (`qars/desktop.py`).
 
-```
-pip install pyinstaller
-pyinstaller --noconfirm --onedir --name "QA Report Studio" ^
-  --add-data "qars;qars" ^
-  --add-data ".streamlit;.streamlit" ^
-  --collect-all streamlit ^
-  --collect-all matplotlib ^
-  --collect-all pptx ^
-  --collect-all reportlab ^
-  run_exe.py
-```
+**To build:** install Python 3.12–3.14 on any Windows PC, double-click
+`build_exe.bat`, and send `desktop\dist\QA Report Studio Setup.exe`. Or take the
+setup file the **Windows desktop build** workflow makes on GitHub (Actions tab
+→ latest run → Artifacts) — it builds with the same `build_exe.bat`, installs
+the result and drives the window in Edge on every change.
 
-Use `--onedir`, not `--onefile`. One-file builds unpack to a temp folder on every
-launch, which makes a Streamlit app slow to start and can trip antivirus.
-
-Keep the `data` folder beside the executable so reports and settings persist. No
-admin rights are needed to run the result, as long as it sits somewhere the user
-can write to.
+The full guide — updating, where the data lives, backups, troubleshooting,
+silent install for IT — is [`desktop/BUILD_INSTRUCTIONS.md`](desktop/BUILD_INSTRUCTIONS.md).
 
 ---
 
@@ -859,6 +869,19 @@ QA_Report_Studio/
 │   ├── 1_…5_*.txt          The text for each Agent Builder section
 │   ├── Rulebook.txt        The rules in full, as an attachment for the agent
 │   └── build_pack.py       Builds the agent's history and test answers from the library
+├── build_exe.bat           Builds the Windows setup file (see START_HERE.txt)
+├── START_HERE.txt          The three steps to the .exe
+├── desktop/                The Windows program
+│   ├── BUILD_INSTRUCTIONS.md   The full guide
+│   ├── run_app.py          Launcher: start-up page, app window, server, shut down
+│   ├── installer.py        The one-file setup program
+│   ├── qa_report_studio.spec, installer.spec   PyInstaller recipes
+│   ├── make_payload.py     Zips the program folder for the setup file
+│   ├── check_app.py        End-to-end check run before building and by --selftest
+│   ├── app_info.py         Name, version and ports in one place
+│   ├── requirements-lock.txt   Exact library versions for the build
+│   └── icon.ico, icon.png
+├── .github/                The Windows build-and-test workflow and its checks
 ├── requirements.txt
 ├── .gitignore              keeps client data out of version control
 ├── run_windows.bat         Windows launcher
@@ -867,6 +890,7 @@ QA_Report_Studio/
 ├── data/                   Your JSON database (created on first run)
 └── qars/
     ├── library.py          The report library — every month, as its own file
+    ├── desktop.py          The desktop app's per-user library and working copy
     ├── library/            Those files, plus index.json (and aliases.json once
     │   │                   a name decision has been made)
     │   ├── C3/             Jan-Jun 2026 as issued, Jul-Sep 2026 sheets, then imports
