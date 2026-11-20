@@ -558,18 +558,37 @@ def log_frontend_inventory() -> None:
         log(f"frontend: could not count the files ({exc})")
 
 
-def profile_dir(state: Path) -> Path:
-    """The window's private browser profile, keyed to this frontend build.
-    Profiles from any other build are deleted, so no stale cache survives."""
+def profile_dir(state: Path, primary: bool = True) -> Path:
+    """
+    The window's private browser profile, keyed to this frontend build.
+
+    Profiles of any other build are set aside at once and deleted in the
+    background, so no stale cache survives an update and deleting thousands of
+    cache files never delays the window. `primary` is False when the app is
+    already running: its window owns the profile then, and is left alone.
+    """
     root = state / "app-window"
     root.mkdir(parents=True, exist_ok=True)
     profile = root / ("profile-" + frontend_stamp())
-    for old in root.glob("profile-*"):
-        if old != profile:
-            shutil.rmtree(old, ignore_errors=True)
-            log(f"cleared the cache of an earlier build: {old.name}")
+    if primary:
+        stale = []
+        for old in list(root.glob("profile-*")) + list(root.glob("old-*")):
+            if old == profile:
+                continue
+            target = old if old.name.startswith("old-") else root / f"old-{old.name}-{os.getpid()}"
+            try:
+                if target != old:
+                    old.rename(target)
+                stale.append(target)
+            except OSError:
+                pass
+        if stale:
+            log(f"clearing the cache of an earlier build: {', '.join(p.name for p in stale)}")
+            threading.Thread(target=lambda: [shutil.rmtree(p, ignore_errors=True) for p in stale],
+                             name="old-profiles", daemon=True).start()
     profile.mkdir(parents=True, exist_ok=True)
-    _mark_clean_exit(profile)
+    if primary:
+        _mark_clean_exit(profile)
     return profile
 
 
@@ -633,7 +652,7 @@ def open_in_default_browser(url: str) -> None:
     webbrowser.open(target)
 
 
-def launch_window(url: str, state: Path):
+def launch_window(url: str, state: Path, primary: bool = True):
     """Open the app window on `url`. Returns its process, or None when it fell
     back to the default browser (whose closing must not stop the server)."""
     if WINDOW_MODE == "browser":
@@ -656,7 +675,7 @@ def launch_window(url: str, state: Path):
     args = [
         str(browser),
         f"--app={url}",
-        f"--user-data-dir={profile_dir(state)}",
+        f"--user-data-dir={profile_dir(state, primary)}",
         *zoom_args,
         "--start-maximized",
         "--no-first-run",
@@ -787,7 +806,7 @@ def second_instance(state: Path) -> int:
         url = ""
     if url and server_answers(url, timeout=3):
         log("already running - opening another window onto it")
-        launch_window(url, state)
+        launch_window(url, state, primary=False)
     else:
         log("already starting - its own window is on the way")
     return 0

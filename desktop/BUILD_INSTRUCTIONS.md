@@ -19,8 +19,9 @@ the detail.
 2. **A "QA Report Studio" icon appears** on their Desktop and in the Start
    menu, and the app opens.
 3. **Every start after that:** a window with a "Starting up…" page appears
-   within a second, and turns into the app a second or two later. The window
-   has its own taskbar button and the app's ladybug icon.
+   within a second, and turns into the app a second or two later (measured
+   on Windows: the window in 0.1 s, the app ready in 1–2 s). The window has
+   its own taskbar button and the app's ladybug icon.
 4. **To quit:** close the window, or press **⏻ Shut down app** at the bottom of
    the menu. Either way the whole program stops; nothing is left running.
 
@@ -93,7 +94,7 @@ It finishes with **DONE**, prints where the file is, and offers to show it in
 Explorer:
 
 ```
-desktop\dist\QA Report Studio Setup.exe      (about 150–200 MB)
+desktop\dist\QA Report Studio Setup.exe      (about 100 MB)
 ```
 
 Scrolling text and a few `WARNING` lines during step 5 are normal.
@@ -226,7 +227,7 @@ each market, then writes what it found to that file.
 - Silent install: `"QA Report Studio Setup.exe" --quiet` (add `--no-launch`
   to not open the app afterwards). Exit code 0 on success, 1 if the app is
   open, 3 for disk space, 4 for a failed install.
-- Install size about 300–450 MB; the per-user data folder grows with the
+- Install size about 200 MB; the per-user data folder grows with the
   imported sheets (kilobytes per month).
 - The app makes no outbound network connections.
 
